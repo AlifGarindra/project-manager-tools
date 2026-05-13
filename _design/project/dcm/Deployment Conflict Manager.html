@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DCM — Deployment Conflict Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{height:100%;background:#09090b;font-family:Inter,sans-serif;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#52525b}
+::-webkit-scrollbar-corner{background:transparent}
+input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(0.4);cursor:pointer}
+select{appearance:none;-webkit-appearance:none}
+::selection{background:rgba(99,102,241,.3);color:#fafafa}
+button{outline:none}
+button:focus-visible{outline:2px solid #6366f1;outline-offset:2px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {
+  useState, useEffect, useRef, useMemo, useReducer,
+  useCallback, createContext, useContext
+} = React;
+
+// ─── Tokens ──────────────────────────────────────────────────────────────────
+const C = {
+  bg:'#09090b', surface:'#111113', surfaceEl:'#1c1c1f',
+  border:'#27272a', borderEl:'#3f3f46',
+  text:'#fafafa', textSec:'#a1a1aa', textMut:'#52525b',
+  accent:'#6366f1', accentHov:'#818cf8',
+  hard:'#ef4444', soft:'#eab308', green:'#22c55e', blue:'#60a5fa',
+};
+const PRIO_COLOR = { critical:'#ef4444', high:'#f97316', medium:'#eab308', low:'#52525b' };
+const STATUS_CFG = {
+  'planned':     { label:'Planned',     color:'#71717a', bg:'#1a1a1d' },
+  'in-progress': { label:'In Progress', color:'#60a5fa', bg:'#1a2236' },
+  'blocked':     { label:'Blocked',     color:'#ef4444', bg:'#2a1414' },
+  'done':        { label:'Done',        color:'#22c55e', bg:'#14231a' },
+  'cancelled':   { label:'Cancelled',   color:'#3f3f46', bg:'#111113' },
+};
+
+// ─── Utilities ───────────────────────────────────────────────────────────────
+const TODAY_STR = '2026-05-13';
+function offset(n){const d=new Date(TODAY_STR);d.setDate(d.getDate()+n);return d.toISOString().split('T')[0]}
+function daysBetween(a,b){return Math.round((new Date(b)-new Date(a))/86400000)}
+function addDays(s,n){const d=new Date(s);d.setDate(d.getDate()+n);return d.toISOString().split('T')[0]}
+function fmt(s){if(!s)return'—';return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric'})}
+function fmtFull(s){if(!s)return'—';return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+function genId(pfx){return`${pfx}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`}
+
+// ─── Initial Data ─────────────────────────────────────────────────────────────
+const INIT_PROJECTS = [
+  { id:'p1', name:'Payment Platform', description:'Core payment & transaction infrastructure', createdAt:'2026-03-01',
+    environments:[
+      {id:'e-prod', name:'production',  color:'#e11d48', order:0},
+      {id:'e-stag', name:'staging',     color:'#d97706', order:1},
+      {id:'e-dev',  name:'development', color:'#16a34a', order:2},
+    ],
+    modules:[
+      {id:'m-pg',    name:'Payment Gateway', category:'Core'},
+      {id:'m-tl',    name:'Transaction Log', category:'Core'},
+      {id:'m-auth',  name:'Auth Service',    category:'Auth'},
+      {id:'m-up',    name:'User Profile',    category:'Auth'},
+      {id:'m-notif', name:'Notification',    category:'Infra'},
+      {id:'m-qw',    name:'Queue Worker',    category:'Infra'},
+      {id:'m-cache', name:'Cache Layer',     category:'Infra'},
+    ],
+  },
+  { id:'p2', name:'Seller Dashboard', description:'Merchant analytics & inventory management', createdAt:'2026-02-15',
+    environments:[
+      {id:'e2-prod', name:'production',  color:'#e11d48', order:0},
+      {id:'e2-stag', name:'staging',     color:'#d97706', order:1},
+      {id:'e2-dev',  name:'development', color:'#16a34a', order:2},
+    ],
+    modules:[
+      {id:'m-an',    name:'Analytics Engine',  category:'Core'},
+      {id:'m-inv',   name:'Inventory Service', category:'Core'},
+      {id:'m-ord',   name:'Order Management',  category:'Operations'},
+      {id:'m-rev',   name:'Review System',     category:'Operations'},
+      {id:'m-sauth', name:'Seller Auth',       category:'Auth'},
+    ],
+  },
+];
+const INIT_TICKETS = [
+  {id:'t1',projectId:'p1',title:'Payment Gateway v2 Migration',description:'Migrate from legacy gateway to v2 API. Zero-downtime with feature flags.',startDate:offset(-2),endDate:offset(3),environmentId:'e-prod',status:'in-progress',assignee:'Budi Santoso',modules:['m-pg','m-qw'],priority:'high'},
+  {id:'t2',projectId:'p1',title:'Gateway Rollback Procedure Test',description:'Validate rollback before v2 goes live. Touches same production modules.',startDate:offset(1),endDate:offset(4),environmentId:'e-prod',status:'planned',assignee:'Dewi Rahayu',modules:['m-pg','m-tl'],priority:'high'},
+  {id:'t3',projectId:'p1',title:'Checkout Performance Optimization',description:'Optimize checkout flow. P99 target <200ms.',startDate:offset(-1),endDate:offset(5),environmentId:'e-stag',status:'in-progress',assignee:'Ahmad Fauzi',modules:['m-pg','m-tl'],priority:'medium'},
+  {id:'t4',projectId:'p1',title:'Auth Service Refactor',description:'Refactor to new token schema. Breaking change — requires coordination.',startDate:offset(6),endDate:offset(11),environmentId:'e-prod',status:'planned',assignee:'Sari Wijaya',modules:['m-auth','m-up'],priority:'high'},
+  {id:'t5',projectId:'p1',title:'Security Patch CVE-2026-0921',description:'Critical auth module security patch. Must ship by EOD May 22.',startDate:offset(7),endDate:offset(9),environmentId:'e-prod',status:'planned',assignee:'Reza Pratama',modules:['m-auth','m-cache'],priority:'critical'},
+  {id:'t6',projectId:'p1',title:'Notification Service v2',description:'Push notifications and email templates upgrade.',startDate:offset(3),endDate:offset(7),environmentId:'e-stag',status:'planned',assignee:'Indah Permata',modules:['m-notif','m-qw'],priority:'medium'},
+  {id:'t7',projectId:'p1',title:'Transaction Audit Log v2',description:'Enhanced audit logging for compliance. Non-breaking.',startDate:offset(2),endDate:offset(8),environmentId:'e-dev',status:'in-progress',assignee:'Ahmad Fauzi',modules:['m-tl'],priority:'low'},
+  {id:'t8',projectId:'p1',title:'Queue Worker Scale-up',description:'Scale to handle 10× throughput for campaign season.',startDate:offset(12),endDate:offset(16),environmentId:'e-prod',status:'planned',assignee:'Budi Santoso',modules:['m-qw'],priority:'medium'},
+  {id:'t9',projectId:'p2',title:'Analytics Engine 3.0',description:'Major rewrite with real-time processing capabilities.',startDate:offset(-3),endDate:offset(5),environmentId:'e2-stag',status:'in-progress',assignee:'Nurul Hidayah',modules:['m-an'],priority:'high'},
+  {id:'t10',projectId:'p2',title:'Inventory Sync Refactor',description:'Fix race conditions in inventory sync.',startDate:offset(0),endDate:offset(6),environmentId:'e2-prod',status:'in-progress',assignee:'Hendra Kurniawan',modules:['m-inv','m-ord'],priority:'high'},
+  {id:'t11',projectId:'p2',title:'Order Management API v2',description:'New REST API with webhook support. Deprecates v1 endpoints.',startDate:offset(2),endDate:offset(7),environmentId:'e2-prod',status:'planned',assignee:'Fitri Handayani',modules:['m-ord','m-rev'],priority:'medium'},
+  {id:'t12',projectId:'p2',title:'Seller Auth SSO Integration',description:'Google SSO for seller authentication.',startDate:offset(8),endDate:offset(13),environmentId:'e2-stag',status:'planned',assignee:'Nurul Hidayah',modules:['m-sauth'],priority:'medium'},
+];
+
+// ─── Conflict Detection ───────────────────────────────────────────────────────
+function detectConflicts(tickets) {
+  const result = [];
+  const active = tickets.filter(t => t.status !== 'done' && t.status !== 'cancelled');
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const a = active[i], b = active[j];
+      if (a.projectId !== b.projectId) continue;
+      if (!(a.startDate <= b.endDate && a.endDate >= b.startDate)) continue;
+      const shared = a.modules.filter(m => b.modules.includes(m));
+      if (!shared.length) continue;
+      result.push({
+        id:`c-${a.id}-${b.id}`,
+        ticket1Id:a.id, ticket2Id:b.id, modules:shared,
+        type: a.environmentId === b.environmentId ? 'hard' : 'soft',
+        projectId:a.projectId,
+        overlapStart: a.startDate > b.startDate ? a.startDate : b.startDate,
+        overlapEnd:   a.endDate   < b.endDate   ? a.endDate   : b.endDate,
+      });
+    }
+  }
+  return result;
+}
+
+// ─── State Management ─────────────────────────────────────────────────────────
+function reducer(state, action) {
+  switch(action.type) {
+    case 'SET_PROJECT': return {...state, selectedProjectId:action.id, view:'timeline'};
+    case 'SET_VIEW':    return {...state, view:action.view};
+    case 'OPEN_TICKET': return {...state, activeTicketId:action.id, ticketMode:action.mode||'view', newTicketDefaults:{}};
+    case 'CLOSE_TICKET':return {...state, activeTicketId:null, ticketMode:null};
+    case 'NEW_TICKET':  return {...state, activeTicketId:null, ticketMode:'create', newTicketDefaults:action.defaults||{}};
+    case 'SAVE_TICKET': {
+      const t = action.ticket;
+      const exists = state.tickets.some(x => x.id === t.id);
+      return {...state, tickets: exists ? state.tickets.map(x=>x.id===t.id?t:x) : [...state.tickets,t], activeTicketId:null, ticketMode:null};
+    }
+    case 'DELETE_TICKET': return {...state, tickets:state.tickets.filter(t=>t.id!==action.id), activeTicketId:null, ticketMode:null};
+    case 'MOVE_TICKET': {
+      const {id,startDate,endDate} = action;
+      return {...state, tickets:state.tickets.map(t=>t.id===id?{...t,startDate,endDate}:t)};
+    }
+    case 'TOGGLE_CONFLICTS': return {...state, conflictPanelOpen:!state.conflictPanelOpen};
+    case 'OPEN_REGISTRY':    return {...state, registryOpen:true};
+    case 'CLOSE_REGISTRY':   return {...state, registryOpen:false};
+    case 'OPEN_ENV_MGR':     return {...state, envMgrOpen:true};
+    case 'CLOSE_ENV_MGR':    return {...state, envMgrOpen:false};
+    case 'SAVE_PROJECT': {
+      const p = action.project;
+      const exists = state.projects.some(x=>x.id===p.id);
+      return {...state, projects: exists ? state.projects.map(x=>x.id===p.id?p:x):[...state.projects,p], selectedProjectId:p.id};
+    }
+    default: return state;
+  }
+}
+const AppCtx = createContext(null);
+function AppProvider({children}) {
+  const [state, dispatch] = useReducer(reducer, {
+    projects:INIT_PROJECTS, tickets:INIT_TICKETS,
+    selectedProjectId:'p1', view:'timeline',
+    activeTicketId:null, ticketMode:null, newTicketDefaults:{},
+    conflictPanelOpen:true, registryOpen:false, envMgrOpen:false,
+  });
+  const conflicts = useMemo(()=>detectConflicts(state.tickets),[state.tickets]);
+  return <AppCtx.Provider value={{state,dispatch,conflicts}}>{children}</AppCtx.Provider>;
+}
+function useApp(){return useContext(AppCtx)}
+
+// ─── UI Primitives ────────────────────────────────────────────────────────────
+function Badge({children, type='default', size='sm'}) {
+  const V = {
+    hard:   {bg:'rgba(239,68,68,0.12)', color:'#ef4444', brd:'rgba(239,68,68,0.28)'},
+    soft:   {bg:'rgba(234,179,8,0.1)',  color:'#eab308', brd:'rgba(234,179,8,0.25)'},
+    accent: {bg:'rgba(99,102,241,0.12)',color:'#818cf8', brd:'rgba(99,102,241,0.28)'},
+    default:{bg:'#1c1c1f',              color:'#71717a', brd:'#27272a'},
+  };
+  const v = V[type]||V.default;
+  return <span style={{display:'inline-flex',alignItems:'center',gap:3,padding:size==='xs'?'0px 5px':'1px 6px',borderRadius:3,fontSize:size==='xs'?9:10,fontWeight:600,letterSpacing:'0.04em',textTransform:'uppercase',whiteSpace:'nowrap',fontFamily:'Inter,sans-serif',background:v.bg,color:v.color,border:`1px solid ${v.brd}`}}>{children}</span>;
+}
+function StatusBadge({status}) {
+  const c = STATUS_CFG[status]||STATUS_CFG['planned'];
+  return <span style={{display:'inline-flex',alignItems:'center',padding:'2px 7px',borderRadius:3,fontSize:10,fontWeight:600,fontFamily:'Inter,sans-serif',color:c.color,background:c.bg,border:`1px solid ${c.color}33`,letterSpacing:'0.03em',textTransform:'uppercase'}}>{c.label}</span>;
+}
+function PrioDot({priority}) {
+  return <span style={{display:'inline-block',width:6,height:6,borderRadius:'50%',background:PRIO_COLOR[priority]||C.textMut,flexShrink:0}} />;
+}
+function Btn({children, variant='default', size='sm', onClick, disabled, style:xs}) {
+  const [hov,setHov]=useState(false);
+  const V = {
+    default:{bg:hov?'#27272a':'transparent', color:hov?C.textSec:C.textMut, brd:`1px solid ${hov?C.borderEl:C.border}`},
+    primary:{bg:hov?C.accentHov:C.accent,   color:'#fff',                   brd:'none'},
+    ghost:  {bg:hov?'#1c1c1f':'transparent', color:hov?C.text:C.textSec,    brd:'none'},
+    danger: {bg:hov?'#3f0f0f':'#2a0909',     color:'#fca5a5',               brd:'1px solid #7f1d1d'},
+    active: {bg:'rgba(99,102,241,0.12)',       color:C.accentHov,            brd:`1px solid rgba(99,102,241,0.3)`},
+  };
+  const v=V[variant]||V.default;
+  const pad=size==='xs'?'2px 7px':size==='sm'?'4px 10px':'7px 14px';
+  const fs=size==='xs'?10:size==='sm'?12:13;
+  return <button onClick={onClick} disabled={disabled} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)} style={{display:'inline-flex',alignItems:'center',gap:5,padding:pad,borderRadius:5,fontSize:fs,fontWeight:500,fontFamily:'Inter,sans-serif',cursor:disabled?'not-allowed':'pointer',opacity:disabled?0.5:1,transition:'background 0.1s,border-color 0.1s,color 0.1s',background:v.bg,color:v.color,border:v.brd,...xs}}>{children}</button>;
+}
+function Input({value,onChange,placeholder,type='text',style:xs}) {
+  const [foc,setFoc]=useState(false);
+  return <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} onFocus={()=>setFoc(true)} onBlur={()=>setFoc(false)} style={{background:'#0c0c0e',border:`1px solid ${foc?C.borderEl:C.border}`,borderRadius:5,padding:'5px 9px',fontSize:12,color:C.text,fontFamily:'Inter,sans-serif',outline:'none',width:'100%',boxSizing:'border-box',transition:'border-color 0.1s',...xs}} />;
+}
+function Sel({value,onChange,children,style:xs}) {
+  return <select value={value} onChange={e=>onChange(e.target.value)} style={{background:'#0c0c0e',border:`1px solid ${C.border}`,borderRadius:5,padding:'5px 9px',fontSize:12,color:C.text,fontFamily:'Inter,sans-serif',outline:'none',width:'100%',boxSizing:'border-box',cursor:'pointer',...xs}}>{children}</select>;
+}
+function Textarea({value,onChange,placeholder,rows=3,style:xs}) {
+  return <textarea value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={rows} style={{background:'#0c0c0e',border:`1px solid ${C.border}`,borderRadius:5,padding:'5px 9px',fontSize:12,color:C.text,fontFamily:'Inter,sans-serif',outline:'none',width:'100%',boxSizing:'border-box',resize:'vertical',lineHeight:1.6,...xs}} />;
+}
+function Hr({style:xs}){return <div style={{height:1,background:C.border,flexShrink:0,...xs}} />;}
+function Field({label,children,style:xs}) {
+  return <div style={{display:'flex',flexDirection:'column',gap:5,...xs}}><label style={{fontSize:10,fontWeight:600,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em',fontFamily:'Inter,sans-serif'}}>{label}</label>{children}</div>;
+}
+
+// ─── Timeline ─────────────────────────────────────────────────────────────────
+const TL_LEFT=136, TL_ROW=56, TL_HDR=52, TL_DAYS=35, TL_DW_DEFAULT=44;
+
+function buildDates(startStr, count) {
+  const out=[];
+  for(let i=0;i<count;i++){const d=new Date(startStr);d.setDate(d.getDate()+i);out.push({str:d.toISOString().split('T')[0],d});}
+  return out;
+}
+function buildMonths(dates) {
+  const months=[];let cur=null;
+  dates.forEach(({str,d})=>{
+    const key=str.slice(0,7);
+    if(!cur||cur.key!==key){cur={key,label:d.toLocaleDateString('en-US',{month:'long',year:'numeric'}),count:1};months.push(cur);}
+    else cur.count++;
+  });
+  return months;
+}
+
+function TicketBar({ticket,env,viewStart,dw,conflicts,onOpen,onMove}) {
+  const [hov,setHov]=useState(false);
+  const [drag,setDrag]=useState(null);
+  const startOff=daysBetween(viewStart,ticket.startDate);
+  const dur=daysBetween(ticket.startDate,ticket.endDate)+1;
+  const left=startOff*dw, width=Math.max(dw-2,dur*dw-2);
+  const tc=conflicts.filter(c=>c.ticket1Id===ticket.id||c.ticket2Id===ticket.id);
+  const hasHard=tc.some(c=>c.type==='hard');
+  const hasSoft=!hasHard&&tc.some(c=>c.type==='soft');
+  const bgBase=hasHard?'rgba(239,68,68,0.12)':hasSoft?'rgba(234,179,8,0.08)':`${env.color}12`;
+  const bgHov =hasHard?'rgba(239,68,68,0.2)' :hasSoft?'rgba(234,179,8,0.15)':`${env.color}20`;
+  const brd   =hasHard?'rgba(239,68,68,0.55)':hasSoft?'rgba(234,179,8,0.45)':`${env.color}55`;
+  const brdHov=hasHard?'#ef4444':hasSoft?'#eab308':env.color;
+
+  const handleMouseDown=useCallback((e)=>{
+    if(e.button!==0)return;
+    e.stopPropagation();e.preventDefault();
+    setDrag({startX:e.clientX,origStart:ticket.startDate,origEnd:ticket.endDate});
+  },[ticket.startDate,ticket.endDate]);
+
+  useEffect(()=>{
+    if(!drag)return;
+    const handleMouseMove=(e)=>{
+      const dx=e.clientX-drag.startX;
+      const dd=Math.round(dx/dw);
+      if(dd===0)return;
+      onMove(ticket.id,addDays(drag.origStart,dd),addDays(drag.origEnd,dd));
+    };
+    const handleMouseUp=(e)=>{
+      const dx=e.clientX-drag.startX;
+      const dd=Math.round(dx/dw);
+      if(dd!==0) onMove(ticket.id,addDays(drag.origStart,dd),addDays(drag.origEnd,dd));
+      setDrag(null);
+    };
+    document.addEventListener('mousemove',handleMouseMove);
+    document.addEventListener('mouseup',handleMouseUp);
+    return()=>{document.removeEventListener('mousemove',handleMouseMove);document.removeEventListener('mouseup',handleMouseUp);};
+  },[drag,dw,onMove,ticket.id]);
+
+  return (
+    <div onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)} onMouseDown={handleMouseDown}
+      onClick={(e)=>{if(!drag){e.stopPropagation();onOpen(ticket.id);}}}
+      style={{position:'absolute',left,top:9,width,height:TL_ROW-20,borderRadius:4,
+        background:drag?bgHov:hov?bgHov:bgBase,border:`1px solid ${hov||drag?brdHov:brd}`,
+        cursor:drag?'grabbing':'grab',overflow:'hidden',display:'flex',alignItems:'center',
+        padding:'0 7px',gap:5,transition:drag?'none':'background 0.1s,border-color 0.1s',
+        boxSizing:'border-box',zIndex:hov||drag?20:2,userSelect:'none'}}>
+      <div style={{width:3,minWidth:3,height:'55%',borderRadius:2,background:env.color,flexShrink:0}} />
+      {(hasHard||hasSoft)&&<span style={{fontSize:8,fontWeight:700,flexShrink:0,color:hasHard?C.hard:C.soft,background:hasHard?'rgba(239,68,68,0.18)':'rgba(234,179,8,0.15)',padding:'1px 4px',borderRadius:2,border:`1px solid ${hasHard?'rgba(239,68,68,0.3)':'rgba(234,179,8,0.25)'}`}}>{hasHard?'⚡':'◎'}</span>}
+      <span style={{fontSize:11,fontWeight:500,color:(hov||drag)?C.text:C.textSec,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,transition:'color 0.1s'}}>{ticket.title}</span>
+      {dur>3&&<span style={{fontSize:9,color:C.textMut,flexShrink:0}}>{fmt(ticket.startDate)}</span>}
+    </div>
+  );
+}
+
+function ConflictZone({conflict,viewStart,dw}) {
+  const s=daysBetween(viewStart,conflict.overlapStart);
+  const e=daysBetween(viewStart,conflict.overlapEnd)+1;
+  if(e<=0||s>=TL_DAYS)return null;
+  const isH=conflict.type==='hard';
+  return <div style={{position:'absolute',left:s*dw,top:0,bottom:0,width:(e-s)*dw,background:isH?'rgba(239,68,68,0.055)':'rgba(234,179,8,0.04)',borderLeft:`1px dashed ${isH?'rgba(239,68,68,0.22)':'rgba(234,179,8,0.18)'}`,borderRight:`1px dashed ${isH?'rgba(239,68,68,0.22)':'rgba(234,179,8,0.18)'}`,pointerEvents:'none',zIndex:0}} />;
+}
+
+function TimelineView() {
+  const {state,dispatch,conflicts}=useApp();
+  const [dw,setDw]=useState(TL_DW_DEFAULT);
+  const [vsOff,setVsOff]=useState(-5);
+  const scrollRef=useRef(null);
+  const viewStart=useMemo(()=>offset(vsOff),[vsOff]);
+  const dates=useMemo(()=>buildDates(viewStart,TL_DAYS),[viewStart]);
+  const months=useMemo(()=>buildMonths(dates),[dates]);
+
+  const project=state.projects.find(p=>p.id===state.selectedProjectId);
+  if(!project)return null;
+  const tickets=state.tickets.filter(t=>t.projectId===state.selectedProjectId);
+  const pConf=conflicts.filter(c=>c.projectId===state.selectedProjectId);
+  const sortedEnvs=[...project.environments].sort((a,b)=>a.order-b.order);
+  const totalW=TL_DAYS*dw;
+  const todayLeft=daysBetween(viewStart,TODAY_STR)*dw;
+  const hardC=pConf.filter(c=>c.type==='hard').length;
+  const softC=pConf.filter(c=>c.type==='soft').length;
+
+  useEffect(()=>{
+    if(scrollRef.current){
+      scrollRef.current.scrollLeft=Math.max(0,daysBetween(viewStart,TODAY_STR)*dw-180);
+    }
+  },[]);
+
+  const handleMove=useCallback((id,ns,ne)=>dispatch({type:'MOVE_TICKET',id,startDate:ns,endDate:ne}),[dispatch]);
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',flex:1,minHeight:0,minWidth:0,overflow:'hidden',background:C.bg}}>
+      {/* Toolbar */}
+      <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0,padding:'0 14px',height:40,borderBottom:`1px solid ${C.border}`,background:C.surface}}>
+        <div style={{display:'flex',gap:1}}>
+          {[['← Prev',()=>setVsOff(v=>v-7)],['Today',()=>setVsOff(-5)],['Next →',()=>setVsOff(v=>v+7)]].map(([lbl,fn])=>(
+            <Btn key={lbl} variant="ghost" size="sm" onClick={fn}>{lbl}</Btn>
+          ))}
+        </div>
+        <div style={{width:1,height:16,background:C.border}} />
+        <div style={{display:'flex',alignItems:'center',gap:5}}>
+          <span style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.04em'}}>Zoom</span>
+          {[['−',-8],['+',8]].map(([lbl,d])=>(
+            <button key={lbl} onClick={()=>setDw(w=>Math.min(80,Math.max(22,w+d)))} style={{width:22,height:22,borderRadius:4,background:'#1c1c1f',border:`1px solid ${C.border}`,color:C.textSec,fontSize:13,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'Inter,sans-serif'}}>{lbl}</button>
+          ))}
+          <span style={{fontSize:10,color:C.textMut,width:44,textAlign:'center'}}>{dw}px/d</span>
+        </div>
+        <div style={{flex:1}} />
+        {(hardC>0||softC>0)&&<div style={{display:'flex',gap:4}}>{hardC>0&&<Badge type="hard">{hardC} hard</Badge>}{softC>0&&<Badge type="soft">{softC} soft</Badge>}</div>}
+        <Btn variant="primary" size="sm" onClick={()=>dispatch({type:'NEW_TICKET'})}>+ Ticket</Btn>
+      </div>
+
+      {/* Layout */}
+      <div style={{display:'flex',flex:1,minHeight:0,minWidth:0}}>
+        {/* Left env labels */}
+        <div style={{width:TL_LEFT,flexShrink:0,borderRight:`1px solid ${C.border}`,background:C.surface,display:'flex',flexDirection:'column',zIndex:4}}>
+          <div style={{height:TL_HDR,borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'flex-end',padding:'0 12px 7px'}}>
+            <span style={{fontSize:9,fontWeight:600,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em'}}>Environment</span>
+          </div>
+          {sortedEnvs.map(env=>{
+            const envT=tickets.filter(t=>t.environmentId===env.id);
+            const envC=pConf.filter(c=>{const t1=tickets.find(t=>t.id===c.ticket1Id),t2=tickets.find(t=>t.id===c.ticket2Id);return(t1?.environmentId===env.id)||(t2?.environmentId===env.id);});
+            const hasH=envC.some(c=>c.type==='hard');
+            return (
+              <div key={env.id} style={{height:TL_ROW,flexShrink:0,borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',padding:'0 12px',gap:8}}>
+                <div style={{width:7,height:7,borderRadius:'50%',background:env.color,flexShrink:0}} />
+                <span style={{fontSize:11,fontWeight:500,color:C.textSec,textTransform:'capitalize',flex:1}}>{env.name}</span>
+                {envC.length>0&&<div style={{width:6,height:6,borderRadius:'50%',background:hasH?C.hard:C.soft,flexShrink:0}} />}
+                <span style={{fontSize:9,color:C.textMut,flexShrink:0}}>{envT.length}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Scrollable timeline */}
+        <div ref={scrollRef} style={{flex:1,overflowX:'auto',overflowY:'hidden'}}>
+          <div style={{width:totalW,minWidth:totalW,position:'relative'}}>
+            {/* Date header */}
+            <div style={{position:'sticky',top:0,background:C.surface,borderBottom:`1px solid ${C.border}`,zIndex:3}}>
+              <div style={{display:'flex',height:18,borderBottom:`1px solid ${C.border}33`}}>
+                {months.map(m=>(
+                  <div key={m.key} style={{width:m.count*dw,flexShrink:0,display:'flex',alignItems:'center',padding:'0 8px',borderRight:`1px solid ${C.border}33`}}>
+                    <span style={{fontSize:9,fontWeight:700,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em',whiteSpace:'nowrap',overflow:'hidden'}}>{m.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{display:'flex',height:34}}>
+                {dates.map(({str,d})=>{
+                  const isToday=str===TODAY_STR;
+                  const isWknd=d.getDay()===0||d.getDay()===6;
+                  return (
+                    <div key={str} style={{width:dw,flexShrink:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',borderRight:`1px solid ${isToday?C.accent+'60':C.border+'55'}`,background:isToday?`${C.accent}12`:isWknd?'#0c0c0f':'transparent',position:'relative',gap:1}}>
+                      {isToday
+                        ? <div style={{position:'absolute',top:0,left:'50%',transform:'translateX(-50%)',width:22,height:22,borderRadius:'50%',background:C.accent,display:'flex',alignItems:'center',justifyContent:'center'}}><span style={{fontSize:10,fontWeight:700,color:'#fff'}}>{d.getDate()}</span></div>
+                        : <><span style={{fontSize:8,color:isWknd?C.textMut+'80':C.textMut,textTransform:'uppercase'}}>{['Su','Mo','Tu','We','Th','Fr','Sa'][d.getDay()]}</span><span style={{fontSize:10,fontWeight:d.getDate()===1?600:400,color:isWknd?C.textMut:C.textSec}}>{d.getDate()}</span></>
+                      }
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Env rows */}
+            {sortedEnvs.map(env=>{
+              const envTickets=tickets.filter(t=>t.environmentId===env.id);
+              const hardZones=pConf.filter(c=>{if(c.type!=='hard')return false;const t1=tickets.find(t=>t.id===c.ticket1Id),t2=tickets.find(t=>t.id===c.ticket2Id);return t1?.environmentId===env.id&&t2?.environmentId===env.id;});
+              const softZones=pConf.filter(c=>{if(c.type!=='soft')return false;const t1=tickets.find(t=>t.id===c.ticket1Id),t2=tickets.find(t=>t.id===c.ticket2Id);return(t1?.environmentId===env.id)||(t2?.environmentId===env.id);});
+              return (
+                <div key={env.id} style={{position:'relative',height:TL_ROW,borderBottom:`1px solid ${C.border}`}}>
+                  {dates.map(({str,d},i)=>{const isW=d.getDay()===0||d.getDay()===6;if(!isW)return null;return<div key={str} style={{position:'absolute',left:i*dw,top:0,bottom:0,width:dw,background:'#0c0c0f',pointerEvents:'none'}} />;}).filter(Boolean)}
+                  {[...hardZones,...softZones].map(c=><ConflictZone key={c.id} conflict={c} viewStart={viewStart} dw={dw} />)}
+                  {todayLeft>=0&&todayLeft<=totalW&&<div style={{position:'absolute',left:todayLeft,top:0,bottom:0,width:1,background:`${C.accent}45`,pointerEvents:'none',zIndex:5}} />}
+                  {envTickets.map(ticket=>(
+                    <TicketBar key={ticket.id} ticket={ticket} env={env} viewStart={viewStart} dw={dw} conflicts={pConf}
+                      onOpen={id=>dispatch({type:'OPEN_TICKET',id,mode:'view'})} onMove={handleMove} />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Board ────────────────────────────────────────────────────────────────────
+const COLS=[{id:'planned',label:'Planned'},{id:'in-progress',label:'In Progress'},{id:'blocked',label:'Blocked'},{id:'done',label:'Done'},{id:'cancelled',label:'Cancelled'}];
+const COL_COLOR={'planned':C.textMut,'in-progress':'#60a5fa','blocked':'#ef4444','done':'#22c55e','cancelled':'#3f3f46'};
+
+function BoardCard({ticket,project,conflicts,onClick}) {
+  const [hov,setHov]=useState(false);
+  const env=project.environments.find(e=>e.id===ticket.environmentId);
+  const tc=conflicts.filter(c=>c.ticket1Id===ticket.id||c.ticket2Id===ticket.id);
+  const hasHard=tc.some(c=>c.type==='hard');
+  const hasSoft=!hasHard&&tc.some(c=>c.type==='soft');
+  const cc=hasHard?C.hard:hasSoft?C.soft:null;
+  return (
+    <div onClick={()=>onClick(ticket.id)} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+      style={{background:hov?C.surfaceEl:C.surface,border:`1px solid ${cc?cc+'40':C.border}`,borderRadius:6,padding:'10px 11px',cursor:'pointer',position:'relative',transition:'background 0.1s,border-color 0.1s',overflow:'hidden'}}>
+      {cc&&<div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background:cc}} />}
+      <div style={{display:'flex',alignItems:'flex-start',gap:6,marginBottom:6}}>
+        <PrioDot priority={ticket.priority} />
+        <span style={{fontSize:12,fontWeight:500,color:C.text,flex:1,lineHeight:1.45}}>{ticket.title}</span>
+      </div>
+      {ticket.modules.length>0&&(
+        <div style={{display:'flex',flexWrap:'wrap',gap:3,marginBottom:7}}>
+          {ticket.modules.slice(0,3).map(mid=>{const mod=project.modules.find(m=>m.id===mid);return mod?<span key={mid} style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#1c1c1f',color:C.textMut,border:`1px solid ${C.border}`,fontFamily:'Inter,sans-serif'}}>{mod.name}</span>:null;})}
+          {ticket.modules.length>3&&<span style={{fontSize:9,color:C.textMut}}>+{ticket.modules.length-3}</span>}
+        </div>
+      )}
+      <div style={{display:'flex',alignItems:'center',gap:5}}>
+        {env&&<div style={{display:'flex',alignItems:'center',gap:4}}><div style={{width:5,height:5,borderRadius:'50%',background:env.color}} /><span style={{fontSize:9,color:C.textMut,textTransform:'capitalize'}}>{env.name}</span></div>}
+        <div style={{flex:1}} />
+        {cc&&<Badge type={hasHard?'hard':'soft'} size="xs">{hasHard?'conflict':'warning'}</Badge>}
+        <span style={{fontSize:9,color:C.textMut}}>{fmt(ticket.startDate)}</span>
+      </div>
+    </div>
+  );
+}
+
+function BoardCol({col,tickets,project,conflicts,dispatch}) {
+  const [dragOver,setDO]=useState(false);
+  const [hovAdd,setHA]=useState(false);
+  const ac=COL_COLOR[col.id]||C.textMut;
+  return (
+    <div style={{display:'flex',flexDirection:'column',width:252,flexShrink:0,background:dragOver?'#161618':C.surface,border:`1px solid ${dragOver?C.borderEl:C.border}`,borderRadius:8,overflow:'hidden',transition:'background 0.1s',maxHeight:'100%'}}
+      onDragOver={e=>{e.preventDefault();setDO(true);}} onDragLeave={()=>setDO(false)}
+      onDrop={e=>{e.preventDefault();setDO(false);if(!window._dcmDragTicket)return;dispatch({type:'SAVE_TICKET',ticket:{...window._dcmDragTicket,status:col.id}});}}>
+      <div style={{padding:'9px 12px',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:7,flexShrink:0}}>
+        <div style={{width:6,height:6,borderRadius:'50%',background:ac,opacity:0.8}} />
+        <span style={{fontSize:11,fontWeight:600,color:C.textSec,flex:1}}>{col.label}</span>
+        <span style={{fontSize:9,fontWeight:700,color:C.textMut,background:'#1c1c1f',padding:'1px 5px',borderRadius:3,border:`1px solid ${C.border}`}}>{tickets.length}</span>
+      </div>
+      <div style={{flex:1,overflowY:'auto',padding:'8px 8px 0',display:'flex',flexDirection:'column',gap:6}}>
+        {tickets.map(t=>(
+          <div key={t.id} draggable onDragStart={e=>{e.dataTransfer.setData('ticketId',t.id);window._dcmDragTicket=t;}}>
+            <BoardCard ticket={t} project={project} conflicts={conflicts} onClick={id=>dispatch({type:'OPEN_TICKET',id,mode:'view'})} />
+          </div>
+        ))}
+        {tickets.length===0&&<div style={{padding:'20px 8px',textAlign:'center',color:C.textMut,fontSize:11}}>No tickets</div>}
+      </div>
+      <div style={{padding:8,flexShrink:0}}>
+        <button onMouseEnter={()=>setHA(true)} onMouseLeave={()=>setHA(false)} onClick={()=>dispatch({type:'NEW_TICKET',defaults:{status:col.id}})}
+          style={{width:'100%',padding:'5px',background:'transparent',border:`1px dashed ${hovAdd?C.borderEl:C.border+'88'}`,borderRadius:5,color:hovAdd?C.textSec:C.textMut,fontSize:11,cursor:'pointer',fontFamily:'Inter,sans-serif',transition:'all 0.1s'}}>
+          + Add ticket
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BoardView() {
+  const {state,dispatch,conflicts}=useApp();
+  const project=state.projects.find(p=>p.id===state.selectedProjectId);
+  if(!project)return null;
+  const tickets=state.tickets.filter(t=>t.projectId===state.selectedProjectId);
+  const pConf=conflicts.filter(c=>c.projectId===state.selectedProjectId);
+  const hardC=pConf.filter(c=>c.type==='hard').length;
+  const softC=pConf.filter(c=>c.type==='soft').length;
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',background:C.bg,minHeight:0}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0,padding:'0 14px',height:40,borderBottom:`1px solid ${C.border}`,background:C.surface}}>
+        <span style={{fontSize:11,color:C.textMut}}>{tickets.length} tickets</span>
+        {hardC>0&&<Badge type="hard">{hardC} hard</Badge>}
+        {softC>0&&<Badge type="soft">{softC} soft</Badge>}
+        <div style={{flex:1}} />
+        <Btn variant="primary" size="sm" onClick={()=>dispatch({type:'NEW_TICKET'})}>+ Ticket</Btn>
+      </div>
+      <div style={{flex:1,overflowX:'auto',overflowY:'hidden',padding:'14px',display:'flex',gap:10,alignItems:'flex-start'}}>
+        {COLS.map(col=>(
+          <BoardCol key={col.id} col={col} tickets={tickets.filter(t=>t.status===col.id)} project={project} conflicts={pConf} dispatch={dispatch} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Conflict Panel ───────────────────────────────────────────────────────────
+function ConflictItem({conflict,tickets,project,onOpen}) {
+  const [open,setOpen]=useState(false);
+  const t1=tickets.find(t=>t.id===conflict.ticket1Id);
+  const t2=tickets.find(t=>t.id===conflict.ticket2Id);
+  if(!t1||!t2)return null;
+  const isH=conflict.type==='hard';
+  const env1=project.environments.find(e=>e.id===t1.environmentId);
+  const env2=project.environments.find(e=>e.id===t2.environmentId);
+  const mods=conflict.modules.map(id=>project.modules.find(m=>m.id===id)).filter(Boolean);
+  const days=daysBetween(conflict.overlapStart,conflict.overlapEnd)+1;
+  const ac=isH?'rgba(239,68,68,':'rgba(234,179,8,';
+  return (
+    <div style={{border:`1px solid ${isH?'rgba(239,68,68,0.28)':'rgba(234,179,8,0.22)'}`,borderRadius:6,overflow:'hidden'}}>
+      <div onClick={()=>setOpen(o=>!o)} style={{padding:'9px 11px',cursor:'pointer',background:isH?'rgba(239,68,68,0.07)':'rgba(234,179,8,0.05)',display:'flex',flexDirection:'column',gap:5}}>
+        <div style={{display:'flex',alignItems:'center',gap:6}}>
+          <Badge type={isH?'hard':'soft'} size="xs">{isH?'⚡ Hard':'◎ Soft'}</Badge>
+          <span style={{fontSize:9,color:C.textMut,marginLeft:'auto'}}>{fmt(conflict.overlapStart)}–{fmt(conflict.overlapEnd)}</span>
+          <span style={{fontSize:10,color:C.textMut,marginLeft:4,color:isH?C.hard:C.soft}}>({days}d)</span>
+          <span style={{fontSize:10,color:C.textMut}}>{open?'▲':'▼'}</span>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:2}}>
+          <span style={{fontSize:11,fontWeight:500,color:C.text,lineHeight:1.35}}>{t1.title}</span>
+          <span style={{fontSize:9,color:C.textMut,paddingLeft:2}}>vs</span>
+          <span style={{fontSize:11,fontWeight:500,color:C.text,lineHeight:1.35}}>{t2.title}</span>
+        </div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+          {mods.map(m=><span key={m.id} style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:isH?'rgba(239,68,68,0.14)':'rgba(234,179,8,0.1)',color:isH?C.hard:C.soft,border:`1px solid ${isH?C.hard:C.soft}33`,fontFamily:'Inter,sans-serif'}}>{m.name}</span>)}
+        </div>
+      </div>
+      {open&&(
+        <div style={{background:C.surface,borderTop:`1px solid ${C.border}`,padding:'10px 11px',display:'flex',flexDirection:'column',gap:8}}>
+          <div style={{display:'flex',gap:6}}>
+            {[{t:t1,env:env1},{t:t2,env:env2}].map(({t,env})=>(
+              <div key={t.id} onClick={()=>onOpen(t.id)} style={{flex:1,padding:'7px 9px',background:'#0c0c0e',border:`1px solid ${C.border}`,borderRadius:5,cursor:'pointer',display:'flex',flexDirection:'column',gap:4}}>
+                <span style={{fontSize:10,fontWeight:500,color:C.text,lineHeight:1.35}}>{t.title}</span>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>{env&&<div style={{width:5,height:5,borderRadius:'50%',background:env.color}} />}<span style={{fontSize:9,color:C.textMut,textTransform:'capitalize'}}>{env?.name}</span></div>
+                <StatusBadge status={t.status} />
+              </div>
+            ))}
+          </div>
+          <p style={{margin:0,fontSize:10,color:C.textMut,lineHeight:1.55}}>{isH?`Both tickets deploy to ${env1?.name}. Overlapping module changes can cause direct conflicts.`:`Different environments, but shared modules may cause schema or API contract mismatches.`}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConflictPanel() {
+  const {state,dispatch,conflicts}=useApp();
+  const project=state.projects.find(p=>p.id===state.selectedProjectId);
+  if(!project)return null;
+  const tickets=state.tickets.filter(t=>t.projectId===state.selectedProjectId);
+  const pConf=conflicts.filter(c=>c.projectId===state.selectedProjectId);
+  const hardC=pConf.filter(c=>c.type==='hard');
+  const softC=pConf.filter(c=>c.type==='soft');
+  return (
+    <div style={{width:290,flexShrink:0,background:C.surface,borderLeft:`1px solid ${C.border}`,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{padding:'0 12px',height:40,flexShrink:0,borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:7}}>
+        <span style={{fontSize:11,fontWeight:600,color:C.text}}>Conflicts</span>
+        {hardC.length>0&&<Badge type="hard">{hardC.length}</Badge>}
+        {softC.length>0&&<Badge type="soft">{softC.length}</Badge>}
+        <div style={{flex:1}} />
+        <button onClick={()=>dispatch({type:'TOGGLE_CONFLICTS'})} style={{background:'none',border:'none',cursor:'pointer',color:C.textMut,fontSize:16,padding:'0 2px',lineHeight:1,fontFamily:'Inter,sans-serif'}}>×</button>
+      </div>
+      {pConf.length>0&&(
+        <div style={{padding:'7px 12px',borderBottom:`1px solid ${C.border}`,display:'flex',gap:12,background:'#0e0e10',flexShrink:0}}>
+          {[{n:hardC.length,lbl:'Hard',c:hardC.length>0?C.hard:C.textMut},{n:softC.length,lbl:'Soft',c:softC.length>0?C.soft:C.textMut},{n:pConf.length,lbl:'Total',c:C.textSec}].map(({n,lbl,c})=>(
+            <div key={lbl} style={{display:'flex',flexDirection:'column',gap:1}}>
+              <span style={{fontSize:16,fontWeight:700,color:c,lineHeight:1}}>{n}</span>
+              <span style={{fontSize:9,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em'}}>{lbl}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{flex:1,overflowY:'auto',padding:'10px',display:'flex',flexDirection:'column',gap:7}}>
+        {pConf.length===0
+          ? <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',textAlign:'center',gap:8,padding:'32px 16px',color:C.textMut}}>
+              <div style={{width:36,height:36,borderRadius:'50%',border:`1px solid ${C.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>✓</div>
+              <div style={{fontSize:12,fontWeight:500,color:C.textSec}}>No conflicts</div>
+              <div style={{fontSize:11,lineHeight:1.5,maxWidth:200}}>All tickets are non-overlapping or touch different modules.</div>
+            </div>
+          : <>
+              {hardC.length>0&&<div style={{fontSize:9,fontWeight:600,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em',padding:'2px 2px'}}>Hard Conflicts</div>}
+              {hardC.map(c=><ConflictItem key={c.id} conflict={c} tickets={tickets} project={project} onOpen={id=>dispatch({type:'OPEN_TICKET',id,mode:'view'})} />)}
+              {softC.length>0&&<div style={{fontSize:9,fontWeight:600,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em',padding:'6px 2px 2px'}}>Soft Warnings</div>}
+              {softC.map(c=><ConflictItem key={c.id} conflict={c} tickets={tickets} project={project} onOpen={id=>dispatch({type:'OPEN_TICKET',id,mode:'view'})} />)}
+            </>
+        }
+      </div>
+      <div style={{padding:'7px 12px',borderTop:`1px solid ${C.border}`,display:'flex',flexDirection:'column',gap:4,flexShrink:0}}>
+        {[{c:'rgba(239,68,68,0.4)',bc:'rgba(239,68,68,0.6)',txt:'Hard — same env, same module, overlapping dates'},{c:'rgba(234,179,8,0.3)',bc:'rgba(234,179,8,0.5)',txt:'Soft — different env, shared module'}].map(({c,bc,txt})=>(
+          <div key={txt} style={{display:'flex',alignItems:'center',gap:6}}>
+            <div style={{width:8,height:8,borderRadius:2,background:c,border:`1px solid ${bc}`,flexShrink:0}} />
+            <span style={{fontSize:9,color:C.textMut}}>{txt}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Ticket Modal ─────────────────────────────────────────────────────────────
+function TicketModal() {
+  const {state,dispatch,conflicts}=useApp();
+  const {activeTicketId,ticketMode,projects,tickets,selectedProjectId,newTicketDefaults}=state;
+  const isOpen=activeTicketId!==null||ticketMode==='create';
+  const project=projects.find(p=>p.id===selectedProjectId);
+  const existing=activeTicketId?tickets.find(t=>t.id===activeTicketId):null;
+
+  const makeBlank=useCallback(()=>({
+    id:genId('t'),projectId:selectedProjectId,title:'',description:'',
+    startDate:TODAY_STR,endDate:addDays(TODAY_STR,4),
+    environmentId:project?.environments[0]?.id||'',
+    status:(newTicketDefaults&&newTicketDefaults.status)||'planned',
+    assignee:'',modules:[],priority:'medium',
+    ...(newTicketDefaults||{}),
+  }),[selectedProjectId,project,newTicketDefaults]);
+
+  const [form,setForm]=useState(()=>existing?{...existing}:makeBlank());
+  const [editMode,setEdit]=useState(ticketMode==='create');
+
+  useEffect(()=>{
+    if(ticketMode==='create'){setForm(makeBlank());setEdit(true);}
+    else if(existing){setForm({...existing});setEdit(ticketMode==='edit');}
+  },[activeTicketId,ticketMode]);
+
+  if(!isOpen||!project)return null;
+
+  const tc=activeTicketId?conflicts.filter(c=>c.ticket1Id===activeTicketId||c.ticket2Id===activeTicketId):[];
+  const hasHard=tc.some(c=>c.type==='hard');
+  const env=project.environments.find(e=>e.id===form.environmentId);
+  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const toggleMod=(mid)=>setForm(f=>({...f,modules:f.modules.includes(mid)?f.modules.filter(m=>m!==mid):[...f.modules,mid]}));
+  const catGroups=project.modules.reduce((acc,m)=>{if(!acc[m.category])acc[m.category]=[];acc[m.category].push(m);return acc;},{});
+
+  return (
+    <div onClick={()=>dispatch({type:'CLOSE_TICKET'})} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.72)',zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(3px)'}}>
+      <div onClick={e=>e.stopPropagation()} style={{width:560,maxHeight:'88vh',background:C.surface,border:`1px solid ${C.borderEl}`,borderRadius:10,display:'flex',flexDirection:'column',overflow:'hidden',boxShadow:'0 32px 100px rgba(0,0,0,0.75)'}}>
+        {/* Header */}
+        <div style={{padding:'12px 14px',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:9,flexShrink:0}}>
+          {env&&<div style={{width:8,height:8,borderRadius:'50%',background:env.color,flexShrink:0}} />}
+          {editMode
+            ? <input value={form.title} onChange={e=>set('title',e.target.value)} placeholder="Ticket title…" autoFocus style={{flex:1,background:'none',border:'none',outline:'none',fontSize:14,fontWeight:600,color:C.text,fontFamily:'Inter,sans-serif'}} />
+            : <span style={{flex:1,fontSize:14,fontWeight:600,color:C.text}}>{form.title||'Untitled'}</span>
+          }
+          <div style={{display:'flex',gap:5,flexShrink:0,alignItems:'center'}}>
+            {tc.length>0&&<Badge type={hasHard?'hard':'soft'}>{tc.length} conflict{tc.length!==1?'s':''}</Badge>}
+            {!editMode&&<Btn variant="default" size="sm" onClick={()=>setEdit(true)}>Edit</Btn>}
+            <button onClick={()=>dispatch({type:'CLOSE_TICKET'})} style={{background:'none',border:'none',cursor:'pointer',color:C.textMut,fontSize:18,padding:'0 2px',lineHeight:1}}>×</button>
+          </div>
+        </div>
+        {/* Body */}
+        <div style={{flex:1,overflowY:'auto',padding:'14px',display:'flex',flexDirection:'column',gap:13}}>
+          <div style={{display:'flex',gap:10}}>
+            <Field label="Environment" style={{flex:1}}>{editMode?<Sel value={form.environmentId} onChange={v=>set('environmentId',v)}>{project.environments.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</Sel>:<div style={{display:'flex',alignItems:'center',gap:6,padding:'4px 0'}}>{env&&<div style={{width:7,height:7,borderRadius:'50%',background:env.color}} />}<span style={{fontSize:12,color:C.text,textTransform:'capitalize'}}>{env?.name}</span></div>}</Field>
+            <Field label="Status" style={{flex:1}}>{editMode?<Sel value={form.status} onChange={v=>set('status',v)}>{['planned','in-progress','blocked','done','cancelled'].map(s=><option key={s} value={s}>{s.charAt(0).toUpperCase()+s.slice(1).replace('-',' ')}</option>)}</Sel>:<div style={{padding:'3px 0'}}><StatusBadge status={form.status} /></div>}</Field>
+            <Field label="Priority" style={{flex:1}}>{editMode?<Sel value={form.priority} onChange={v=>set('priority',v)}>{['critical','high','medium','low'].map(p=><option key={p} value={p}>{p.charAt(0).toUpperCase()+p.slice(1)}</option>)}</Sel>:<div style={{display:'flex',alignItems:'center',gap:5,padding:'5px 0'}}><PrioDot priority={form.priority} /><span style={{fontSize:12,color:C.text,textTransform:'capitalize'}}>{form.priority}</span></div>}</Field>
+          </div>
+          <div style={{display:'flex',gap:10}}>
+            <Field label="Start Date" style={{flex:1}}>{editMode?<Input type="date" value={form.startDate} onChange={v=>set('startDate',v)} />:<span style={{fontSize:12,color:C.text,display:'block',padding:'4px 0'}}>{fmtFull(form.startDate)}</span>}</Field>
+            <Field label="End Date" style={{flex:1}}>{editMode?<Input type="date" value={form.endDate} onChange={v=>set('endDate',v)} />:<span style={{fontSize:12,color:C.text,display:'block',padding:'4px 0'}}>{fmtFull(form.endDate)}</span>}</Field>
+            <Field label="Assignee" style={{flex:1}}>{editMode?<Input value={form.assignee} onChange={v=>set('assignee',v)} placeholder="Name" />:<span style={{fontSize:12,color:form.assignee?C.text:C.textMut,display:'block',padding:'4px 0'}}>{form.assignee||'—'}</span>}</Field>
+          </div>
+          <Field label="Description">{editMode?<Textarea value={form.description} onChange={v=>set('description',v)} placeholder="Describe the deployment, rollback plan, risk…" rows={3} />:<p style={{margin:0,fontSize:12,color:form.description?C.textSec:C.textMut,lineHeight:1.6}}>{form.description||'—'}</p>}</Field>
+          <Field label="Modules Touched">
+            {Object.entries(catGroups).map(([cat,mods])=>(
+              <div key={cat} style={{marginBottom:8}}>
+                <div style={{fontSize:9,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>{cat}</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+                  {mods.map(mod=>{
+                    const sel=form.modules.includes(mod.id);
+                    const inConflict=tc.some(c=>c.modules.includes(mod.id));
+                    const ct=inConflict?(tc.filter(c=>c.modules.includes(mod.id)).some(c=>c.type==='hard')?'hard':'soft'):null;
+                    const bg=sel?(ct==='hard'?'rgba(239,68,68,0.12)':ct==='soft'?'rgba(234,179,8,0.1)':`${C.accent}18`):'#1c1c1f';
+                    const co=sel?(ct==='hard'?C.hard:ct==='soft'?C.soft:C.accentHov):C.textMut;
+                    const bd=sel?(ct==='hard'?`${C.hard}60`:ct==='soft'?`${C.soft}60`:`${C.accent}60`):C.border;
+                    return <button key={mod.id} onClick={editMode?()=>toggleMod(mod.id):undefined} style={{padding:'3px 9px',borderRadius:4,fontSize:11,fontFamily:'Inter,sans-serif',fontWeight:sel?500:400,cursor:editMode?'pointer':'default',background:bg,color:co,border:`1px solid ${bd}`,transition:'all 0.1s'}}>{mod.name}</button>;
+                  })}
+                </div>
+              </div>
+            ))}
+          </Field>
+          {tc.length>0&&(
+            <Field label="Active Conflicts">
+              <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                {tc.map(c=>{
+                  const othId=c.ticket1Id===activeTicketId?c.ticket2Id:c.ticket1Id;
+                  const oth=tickets.find(t=>t.id===othId);
+                  const mn=c.modules.map(id=>project.modules.find(m=>m.id===id)?.name).filter(Boolean);
+                  return (
+                    <div key={c.id} onClick={()=>dispatch({type:'OPEN_TICKET',id:othId,mode:'view'})}
+                      style={{padding:'8px 10px',borderRadius:5,cursor:'pointer',background:c.type==='hard'?'rgba(239,68,68,0.07)':'rgba(234,179,8,0.05)',border:`1px solid ${c.type==='hard'?'rgba(239,68,68,0.22)':'rgba(234,179,8,0.18)'}`,display:'flex',flexDirection:'column',gap:3}}>
+                      <div style={{display:'flex',alignItems:'center',gap:6}}><Badge type={c.type==='hard'?'hard':'soft'} size="xs">{c.type==='hard'?'Hard':'Soft'}</Badge><span style={{fontSize:11,fontWeight:500,color:C.text}}>vs {oth?.title}</span></div>
+                      <span style={{fontSize:10,color:C.textMut}}>Shared: {mn.join(', ')} · {fmt(c.overlapStart)}–{fmt(c.overlapEnd)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+        </div>
+        {editMode&&(
+          <div style={{padding:'10px 14px',borderTop:`1px solid ${C.border}`,display:'flex',gap:7,flexShrink:0}}>
+            {existing&&<Btn variant="danger" size="sm" onClick={()=>dispatch({type:'DELETE_TICKET',id:existing.id})}>Delete</Btn>}
+            <div style={{flex:1}} />
+            <Btn variant="default" size="sm" onClick={()=>{if(ticketMode==='create')dispatch({type:'CLOSE_TICKET'});else setEdit(false);}}>Cancel</Btn>
+            <Btn variant="primary" size="sm" onClick={()=>{if(!form.title.trim())return;dispatch({type:'SAVE_TICKET',ticket:form});}}>{ticketMode==='create'?'Create Ticket':'Save Changes'}</Btn>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Module Registry Modal ────────────────────────────────────────────────────
+function RegistryModal() {
+  const {state,dispatch}=useApp();
+  const project=state.projects.find(p=>p.id===state.selectedProjectId);
+  const [mods,setMods]=useState([...project.modules]);
+  const [name,setName]=useState('');
+  const [cat,setCat]=useState('Core');
+  const cats=[...new Set([...mods.map(m=>m.category),'Core','Auth','Infra','Operations','Other'])];
+  const modCats=[...new Set(mods.map(m=>m.category))];
+  const add=()=>{if(!name.trim())return;setMods(p=>[...p,{id:genId('m'),name:name.trim(),category:cat}]);setName('');};
+  const save=()=>{dispatch({type:'SAVE_PROJECT',project:{...project,modules:mods}});dispatch({type:'CLOSE_REGISTRY'});};
+  return (
+    <div onClick={()=>dispatch({type:'CLOSE_REGISTRY'})} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.72)',zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(3px)'}}>
+      <div onClick={e=>e.stopPropagation()} style={{width:460,maxHeight:'80vh',background:C.surface,border:`1px solid ${C.borderEl}`,borderRadius:10,display:'flex',flexDirection:'column',overflow:'hidden',boxShadow:'0 32px 100px rgba(0,0,0,0.75)'}}>
+        <div style={{padding:'12px 14px',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',flexShrink:0}}>
+          <span style={{fontSize:13,fontWeight:600,color:C.text,flex:1}}>Module Registry</span>
+          <span style={{fontSize:11,color:C.textMut,marginRight:12}}>{project.name}</span>
+          <button onClick={()=>dispatch({type:'CLOSE_REGISTRY'})} style={{background:'none',border:'none',cursor:'pointer',color:C.textMut,fontSize:18,padding:'0 2px',lineHeight:1}}>×</button>
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'14px',display:'flex',flexDirection:'column',gap:12}}>
+          <div style={{display:'flex',gap:7}}>
+            <Input value={name} onChange={setName} placeholder="Module name…" style={{flex:1}} />
+            <Sel value={cat} onChange={setCat} style={{width:110,flexShrink:0}}>{cats.map(c=><option key={c} value={c}>{c}</option>)}</Sel>
+            <Btn variant="primary" size="sm" onClick={add}>Add</Btn>
+          </div>
+          {modCats.map(c=>(
+            <div key={c}>
+              <div style={{fontSize:9,fontWeight:600,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:5}}>{c}</div>
+              <div style={{display:'flex',flexDirection:'column',gap:3}}>
+                {mods.filter(m=>m.category===c).map(mod=>(
+                  <div key={mod.id} style={{display:'flex',alignItems:'center',padding:'6px 9px',background:'#0c0c0e',border:`1px solid ${C.border}`,borderRadius:5,gap:8}}>
+                    <span style={{fontSize:12,color:C.text,flex:1}}>{mod.name}</span>
+                    <button onClick={()=>setMods(p=>p.filter(m=>m.id!==mod.id))} style={{background:'none',border:'none',cursor:'pointer',color:C.textMut,fontSize:14,padding:0,lineHeight:1}}>×</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{padding:'10px 14px',borderTop:`1px solid ${C.border}`,display:'flex',gap:7,justifyContent:'flex-end',flexShrink:0}}>
+          <Btn variant="default" size="sm" onClick={()=>dispatch({type:'CLOSE_REGISTRY'})}>Cancel</Btn>
+          <Btn variant="primary" size="sm" onClick={save}>Save Registry</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Env Manager Modal ────────────────────────────────────────────────────────
+const ENV_PALETTE=['#e11d48','#d97706','#16a34a','#0891b2','#7c3aed','#db2777','#ea580c'];
+function EnvModal() {
+  const {state,dispatch}=useApp();
+  const project=state.projects.find(p=>p.id===state.selectedProjectId);
+  const [envs,setEnvs]=useState([...project.environments]);
+  const [name,setName]=useState('');
+  const [color,setColor]=useState('#e11d48');
+  const add=()=>{if(!name.trim())return;setEnvs(p=>[...p,{id:genId('env'),name:name.trim().toLowerCase(),color,order:p.length}]);setName('');};
+  const save=()=>{dispatch({type:'SAVE_PROJECT',project:{...project,environments:envs}});dispatch({type:'CLOSE_ENV_MGR'});};
+  return (
+    <div onClick={()=>dispatch({type:'CLOSE_ENV_MGR'})} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.72)',zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(3px)'}}>
+      <div onClick={e=>e.stopPropagation()} style={{width:440,maxHeight:'75vh',background:C.surface,border:`1px solid ${C.borderEl}`,borderRadius:10,display:'flex',flexDirection:'column',overflow:'hidden',boxShadow:'0 32px 100px rgba(0,0,0,0.75)'}}>
+        <div style={{padding:'12px 14px',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',flexShrink:0}}>
+          <span style={{fontSize:13,fontWeight:600,color:C.text,flex:1}}>Environments</span>
+          <button onClick={()=>dispatch({type:'CLOSE_ENV_MGR'})} style={{background:'none',border:'none',cursor:'pointer',color:C.textMut,fontSize:18,padding:'0 2px',lineHeight:1}}>×</button>
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'14px',display:'flex',flexDirection:'column',gap:10}}>
+          <div style={{display:'flex',gap:7,alignItems:'center'}}>
+            <Input value={name} onChange={setName} placeholder="e.g. canary" style={{flex:1}} />
+            <div style={{display:'flex',gap:3}}>{ENV_PALETTE.map(c=><button key={c} onClick={()=>setColor(c)} style={{width:18,height:18,borderRadius:'50%',background:c,border:color===c?'2px solid #fff':'2px solid transparent',cursor:'pointer',padding:0,flexShrink:0}} />)}</div>
+            <Btn variant="primary" size="sm" onClick={add}>Add</Btn>
+          </div>
+          {envs.map((env,i)=>(
+            <div key={env.id} style={{display:'flex',alignItems:'center',padding:'8px 10px',background:'#0c0c0e',border:`1px solid ${C.border}`,borderRadius:5,gap:10}}>
+              <div style={{width:10,height:10,borderRadius:'50%',background:env.color,flexShrink:0}} />
+              <span style={{fontSize:12,color:C.text,flex:1,textTransform:'capitalize'}}>{env.name}</span>
+              <span style={{fontSize:9,color:C.textMut}}>#{i}</span>
+              <button onClick={()=>setEnvs(p=>p.filter(e=>e.id!==env.id))} style={{background:'none',border:'none',cursor:'pointer',color:C.textMut,fontSize:14,padding:0,lineHeight:1}}>×</button>
+            </div>
+          ))}
+        </div>
+        <div style={{padding:'10px 14px',borderTop:`1px solid ${C.border}`,display:'flex',gap:7,justifyContent:'flex-end',flexShrink:0}}>
+          <Btn variant="default" size="sm" onClick={()=>dispatch({type:'CLOSE_ENV_MGR'})}>Cancel</Btn>
+          <Btn variant="primary" size="sm" onClick={save}>Save</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+function DashboardView() {
+  const {state,dispatch,conflicts}=useApp();
+  const [showNew,setShowNew]=useState(false);
+  const [newName,setNewName]=useState('');
+  const [newDesc,setNewDesc]=useState('');
+  const totalConfl=conflicts.length;
+  const hardTotal=conflicts.filter(c=>c.type==='hard').length;
+  const createProject=()=>{
+    if(!newName.trim())return;
+    const p={id:genId('p'),name:newName.trim(),description:newDesc.trim(),createdAt:TODAY_STR,
+      environments:[{id:genId('env'),name:'production',color:'#e11d48',order:0},{id:genId('env'),name:'staging',color:'#d97706',order:1},{id:genId('env'),name:'development',color:'#16a34a',order:2}],
+      modules:[]};
+    dispatch({type:'SAVE_PROJECT',project:p});
+    setShowNew(false);setNewName('');setNewDesc('');
+  };
+  return (
+    <div style={{flex:1,overflowY:'auto',background:C.bg}}>
+      <div style={{maxWidth:960,margin:'0 auto',padding:'40px 32px 60px'}}>
+        <div style={{marginBottom:32,display:'flex',alignItems:'flex-end',gap:16}}>
+          <div style={{flex:1}}>
+            <h1 style={{margin:'0 0 5px',fontSize:22,fontWeight:700,color:C.text}}>Projects</h1>
+            <p style={{margin:0,fontSize:12,color:C.textMut}}>
+              {state.projects.length} project{state.projects.length!==1?'s':''} · {state.tickets.length} total tickets ·{' '}
+              <span style={{color:totalConfl>0?(hardTotal>0?C.hard:C.soft):C.green}}>{totalConfl>0?`${totalConfl} active conflict${totalConfl!==1?'s':''}`:'no active conflicts'}</span>
+            </p>
+          </div>
+          <Btn variant="primary" size="md" onClick={()=>setShowNew(true)}>+ New Project</Btn>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(340px,1fr))',gap:14}}>
+          {state.projects.map(p=>{
+            const pt=state.tickets.filter(t=>t.projectId===p.id);
+            const pc=conflicts.filter(c=>c.projectId===p.id);
+            const hc=pc.filter(c=>c.type==='hard').length;
+            const sc=pc.filter(c=>c.type==='soft').length;
+            const up=pt.filter(t=>t.status!=='done'&&t.status!=='cancelled'&&t.startDate>=TODAY_STR&&t.startDate<=addDays(TODAY_STR,14)).sort((a,b)=>a.startDate.localeCompare(b.startDate)).slice(0,3);
+            const [hov,setH]=useState(false);
+            return (
+              <div key={p.id} onClick={()=>dispatch({type:'SET_PROJECT',id:p.id})} onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
+                style={{background:hov?'#161618':C.surface,border:`1px solid ${hc>0?'rgba(239,68,68,0.35)':hov?C.borderEl:C.border}`,borderRadius:8,padding:'18px 20px',cursor:'pointer',transition:'background 0.12s,border-color 0.12s',display:'flex',flexDirection:'column',gap:0}}>
+                <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:10}}>
+                  <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:C.text,marginBottom:3}}>{p.name}</div><div style={{fontSize:11,color:C.textMut,lineHeight:1.45}}>{p.description}</div></div>
+                  {(hc>0||sc>0)&&<div style={{display:'flex',gap:4,marginLeft:12,flexShrink:0}}>{hc>0&&<Badge type="hard">{hc} hard</Badge>}{sc>0&&<Badge type="soft">{sc}</Badge>}</div>}
+                </div>
+                <Hr style={{margin:'10px 0'}} />
+                <div style={{display:'flex',gap:20,marginBottom:14}}>
+                  {[{v:pt.length,l:'Tickets',c:C.text},{v:pt.filter(t=>t.status==='in-progress').length,l:'Active',c:C.blue},{v:pc.length,l:'Conflicts',c:pc.length>0?C.hard:C.textMut},{v:p.modules.length,l:'Modules',c:C.textSec}].map(({v,l,c})=>(
+                    <div key={l} style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:20,fontWeight:700,color:c,lineHeight:1}}>{v}</span><span style={{fontSize:9,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.07em'}}>{l}</span></div>
+                  ))}
+                </div>
+                <div style={{display:'flex',gap:10,marginBottom:up.length>0?12:0}}>
+                  {p.environments.map(e=><div key={e.id} style={{display:'flex',alignItems:'center',gap:5}}><div style={{width:6,height:6,borderRadius:'50%',background:e.color}} /><span style={{fontSize:10,color:C.textMut,textTransform:'capitalize'}}>{e.name}</span></div>)}
+                </div>
+                {up.length>0&&<div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  <div style={{fontSize:9,fontWeight:600,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2}}>Upcoming</div>
+                  {up.map(t=>{const te=p.environments.find(e=>e.id===t.environmentId);const tc=pc.filter(c=>c.ticket1Id===t.id||c.ticket2Id===t.id);const hasH=tc.some(c=>c.type==='hard');const hasS=!hasH&&tc.length>0;return(
+                    <div key={t.id} style={{display:'flex',alignItems:'center',gap:7,padding:'5px 8px',borderRadius:4,background:'#0e0e10',border:`1px solid ${C.border}`}}>
+                      {te&&<div style={{width:5,height:5,borderRadius:'50%',background:te.color,flexShrink:0}} />}
+                      <span style={{fontSize:11,color:C.textSec,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.title}</span>
+                      {(hasH||hasS)&&<Badge type={hasH?'hard':'soft'} size="xs">{hasH?'⚡':'◎'}</Badge>}
+                      <span style={{fontSize:9,color:C.textMut,flexShrink:0}}>{fmt(t.startDate)}</span>
+                    </div>
+                  );})}
+                </div>}
+              </div>
+            );
+          })}
+          <button onClick={()=>setShowNew(true)} style={{background:'transparent',border:`1px dashed ${C.border}aa`,borderRadius:8,padding:'18px 20px',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8,minHeight:180,color:C.textMut,fontFamily:'Inter,sans-serif',fontSize:12}}>
+            <div style={{width:32,height:32,borderRadius:8,border:`1px dashed ${C.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>+</div>
+            <span>New Project</span>
+          </button>
+        </div>
+      </div>
+      {showNew&&(
+        <div onClick={()=>setShowNew(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.72)',zIndex:200,display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(3px)'}}>
+          <div onClick={e=>e.stopPropagation()} style={{width:380,background:C.surface,border:`1px solid ${C.borderEl}`,borderRadius:10,padding:20,boxShadow:'0 32px 100px rgba(0,0,0,0.75)',display:'flex',flexDirection:'column',gap:12}}>
+            <div style={{fontSize:14,fontWeight:600,color:C.text}}>New Project</div>
+            <Field label="Project Name"><Input value={newName} onChange={setNewName} placeholder="e.g. API Gateway" /></Field>
+            <Field label="Description"><Input value={newDesc} onChange={setNewDesc} placeholder="Short description (optional)" /></Field>
+            <p style={{margin:0,fontSize:11,color:C.textMut,lineHeight:1.5}}>Default environments (production, staging, development) will be created.</p>
+            <div style={{display:'flex',gap:7,justifyContent:'flex-end'}}>
+              <Btn variant="default" size="sm" onClick={()=>setShowNew(false)}>Cancel</Btn>
+              <Btn variant="primary" size="sm" onClick={createProject}>Create Project</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── App Shell ────────────────────────────────────────────────────────────────
+function NavTab({label,active,onClick}) {
+  const [hov,setHov]=useState(false);
+  return <button onClick={onClick} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)} style={{padding:'3px 11px',borderRadius:4,fontSize:12,fontWeight:500,fontFamily:'Inter,sans-serif',background:active?C.surfaceEl:'transparent',color:active?C.text:hov?C.textSec:C.textMut,border:active?`1px solid ${C.border}`:'1px solid transparent',cursor:'pointer',transition:'all 0.1s'}}>{label}</button>;
+}
+
+function App() {
+  const {state,dispatch,conflicts}=useApp();
+  const {view,selectedProjectId,conflictPanelOpen}=state;
+  const project=state.projects.find(p=>p.id===selectedProjectId);
+  const pConf=conflicts.filter(c=>c.projectId===selectedProjectId);
+  const hardC=pConf.filter(c=>c.type==='hard').length;
+  const softC=pConf.filter(c=>c.type==='soft').length;
+  const inProject=view==='timeline'||view==='board';
+  const [cbHov,setCbHov]=useState(false);
+  return (
+    <div style={{display:'flex',flexDirection:'column',height:'100vh',minWidth:1024,background:C.bg,fontFamily:'Inter,sans-serif',color:C.text,overflow:'hidden'}}>
+      <nav style={{height:44,flexShrink:0,background:C.surface,borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',padding:'0 12px',gap:8,zIndex:10}}>
+        <button onClick={()=>dispatch({type:'SET_VIEW',view:'dashboard'})} style={{display:'flex',alignItems:'center',gap:7,background:'none',border:'none',cursor:'pointer',fontFamily:'Inter,sans-serif',padding:'3px 5px',borderRadius:4}}>
+          <div style={{width:22,height:22,borderRadius:5,background:'rgba(99,102,241,0.2)',border:'1px solid rgba(99,102,241,0.4)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:800,color:C.accent}}>D</div>
+          <span style={{fontSize:12,fontWeight:700,color:C.textSec,letterSpacing:'0.04em'}}>DCM</span>
+        </button>
+        <div style={{width:1,height:18,background:C.border}} />
+        {inProject&&project&&<>
+          <button onClick={()=>dispatch({type:'SET_VIEW',view:'dashboard'})} style={{background:'none',border:'none',cursor:'pointer',padding:'2px 5px',borderRadius:4,fontFamily:'Inter,sans-serif',fontSize:12,fontWeight:500,color:C.textMut}}>Projects</button>
+          <span style={{fontSize:11,color:C.textMut}}>/</span>
+          <span style={{fontSize:12,fontWeight:500,color:C.textSec}}>{project.name}</span>
+          <div style={{width:1,height:18,background:C.border}} />
+        </>}
+        {inProject&&<div style={{display:'flex',gap:2,background:'#0c0c0e',borderRadius:5,padding:2,border:`1px solid ${C.border}`}}><NavTab label="Timeline" active={view==='timeline'} onClick={()=>dispatch({type:'SET_VIEW',view:'timeline'})} /><NavTab label="Board" active={view==='board'} onClick={()=>dispatch({type:'SET_VIEW',view:'board'})} /></div>}
+        <div style={{flex:1}} />
+        {inProject&&<>
+          <Btn variant="ghost" size="sm" onClick={()=>dispatch({type:'OPEN_REGISTRY'})}>Modules</Btn>
+          <Btn variant="ghost" size="sm" onClick={()=>dispatch({type:'OPEN_ENV_MGR'})}>Environments</Btn>
+          <div style={{width:1,height:18,background:C.border}} />
+          <button onMouseEnter={()=>setCbHov(true)} onMouseLeave={()=>setCbHov(false)} onClick={()=>dispatch({type:'TOGGLE_CONFLICTS'})}
+            style={{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',borderRadius:5,background:conflictPanelOpen?'rgba(99,102,241,0.1)':cbHov?C.surfaceEl:'transparent',border:`1px solid ${conflictPanelOpen?'rgba(99,102,241,0.3)':cbHov?C.borderEl:C.border}`,cursor:'pointer',fontFamily:'Inter,sans-serif',transition:'all 0.1s'}}>
+            {pConf.length>0?<div style={{display:'flex',gap:4,alignItems:'center'}}>{hardC>0&&<Badge type="hard">{hardC}</Badge>}{softC>0&&<Badge type="soft">{softC}</Badge>}</div>:<div style={{width:6,height:6,borderRadius:'50%',background:C.green,opacity:0.8}} />}
+            <span style={{fontSize:11,color:conflictPanelOpen?C.textSec:C.textMut}}>Conflicts</span>
+          </button>
+        </>}
+        <div style={{width:26,height:26,borderRadius:'50%',background:'#27272a',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,color:'#71717a',letterSpacing:'0.04em',flexShrink:0}}>PM</div>
+      </nav>
+      <div style={{flex:1,display:'flex',minHeight:0,overflow:'hidden'}}>
+        {view==='dashboard'&&<DashboardView />}
+        {view==='timeline'&&<><TimelineView />{conflictPanelOpen&&<ConflictPanel />}</>}
+        {view==='board'&&<><BoardView />{conflictPanelOpen&&<ConflictPanel />}</>}
+      </div>
+      <TicketModal />
+      {state.registryOpen&&<RegistryModal />}
+      {state.envMgrOpen&&<EnvModal />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <AppProvider><App /></AppProvider>
+);
+</script>
+</body>
+</html>
