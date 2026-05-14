@@ -29,7 +29,8 @@ interface AppState {
   newTicket: (defaults?: NewTicketDefaults) => void
   saveTicket: (ticket: Ticket) => void
   deleteTicket: (id: string) => void
-  moveTicket: (id: string, startDate: string, endDate: string) => void
+  moveTicket: (id: string, startDate: string, endDate: string, environmentId?: string) => void
+  removeDeploymentEntry: (ticketId: string, environmentId: string, date: string) => void
   toggleConflicts: () => void
   openRegistry: () => void
   closeRegistry: () => void
@@ -82,9 +83,37 @@ export const useAppStore = create<AppState>((set) => ({
       ticketMode: null,
     })),
 
-  moveTicket: (id, startDate, endDate) =>
+  moveTicket: (id, startDate, endDate, environmentId?) =>
     set((s) => ({
-      tickets: s.tickets.map((t) => (t.id === id ? { ...t, startDate, endDate } : t)),
+      tickets: s.tickets.map((t) => {
+        if (t.id !== id) return t
+        const envChanged = environmentId && environmentId !== t.environmentId
+        return {
+          ...t,
+          startDate,
+          endDate,
+          ...(environmentId ? { environmentId } : {}),
+          // auto-record deployment entry when env changes
+          deployments: envChanged
+            ? [
+                ...t.deployments,
+                { id: generateId('dep'), environmentId: environmentId!, date: startDate },
+              ]
+            : t.deployments,
+        }
+      }),
+    })),
+
+  removeDeploymentEntry: (ticketId, environmentId, date) =>
+    set((s) => ({
+      tickets: s.tickets.map(t => {
+        if (t.id !== ticketId) return t
+        const sorted = [...t.deployments].sort((a, b) => a.date.localeCompare(b.date))
+        const idx = sorted.findIndex(d => d.environmentId === environmentId && d.date === date)
+        if (idx === -1) return t
+        // Keep only entries BEFORE this index (cascade: delete this + all later entries)
+        return { ...t, deployments: sorted.slice(0, idx) }
+      }),
     })),
 
   toggleConflicts: () => set((s) => ({ conflictPanelOpen: !s.conflictPanelOpen })),

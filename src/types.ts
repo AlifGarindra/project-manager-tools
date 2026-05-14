@@ -25,6 +25,12 @@ export interface Project {
   modules: Module[]
 }
 
+export interface DeploymentEntry {
+  id: string
+  environmentId: string
+  date: string        // YYYY-MM-DD — tanggal deploy ke env ini
+}
+
 export interface Ticket {
   id: string
   projectId: string
@@ -37,6 +43,7 @@ export interface Ticket {
   assignee: string
   modules: string[]
   priority: TicketPriority
+  deployments: DeploymentEntry[]  // riwayat deployment ke setiap env
 }
 
 export interface ConflictPair {

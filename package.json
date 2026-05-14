@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "stop": "lsof -ti :5173 | xargs kill -9 2>/dev/null || true",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "type-check": "tsc --noEmit"
