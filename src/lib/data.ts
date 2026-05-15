@@ -47,7 +47,7 @@ export const INIT_TICKETS: Ticket[] = [
     id: 't1', projectId: 'p1',
     title: 'Payment Gateway v2 Migration',
     description: 'Migrate from legacy gateway to v2 API. Zero-downtime deployment with feature flags.',
-    startDate: offset(-2), endDate: offset(3),
+    startDate: offset(-8), endDate: null,
     environmentId: 'e-prod', status: 'in-progress',
     assignee: 'Budi Santoso', modules: ['m-pg', 'm-qw'], priority: 'high',
     deployments: [
@@ -60,7 +60,7 @@ export const INIT_TICKETS: Ticket[] = [
     id: 't2', projectId: 'p1',
     title: 'Gateway Rollback Procedure Test',
     description: 'Validate rollback procedure before v2 goes fully live. Touches same production modules.',
-    startDate: offset(1), endDate: offset(4),
+    startDate: offset(-3), endDate: null,
     environmentId: 'e-prod', status: 'planned',
     assignee: 'Dewi Rahayu', modules: ['m-pg', 'm-tl'], priority: 'high',
     deployments: [
@@ -72,7 +72,7 @@ export const INIT_TICKETS: Ticket[] = [
     id: 't3', projectId: 'p1',
     title: 'Checkout Performance Optimization',
     description: 'Optimize checkout flow response times. P99 target <200ms.',
-    startDate: offset(-1), endDate: offset(5),
+    startDate: offset(-5), endDate: null,
     environmentId: 'e-stag', status: 'in-progress',
     assignee: 'Ahmad Fauzi', modules: ['m-pg', 'm-tl'], priority: 'medium',
     deployments: [
@@ -135,7 +135,7 @@ export const INIT_TICKETS: Ticket[] = [
     id: 't9', projectId: 'p2',
     title: 'Analytics Engine 3.0',
     description: 'Major rewrite of analytics engine with real-time processing capabilities.',
-    startDate: offset(-3), endDate: offset(5),
+    startDate: offset(-7), endDate: null,
     environmentId: 'e2-stag', status: 'in-progress',
     assignee: 'Nurul Hidayah', modules: ['m-an'], priority: 'high',
     deployments: [
@@ -147,7 +147,7 @@ export const INIT_TICKETS: Ticket[] = [
     id: 't10', projectId: 'p2',
     title: 'Inventory Sync Refactor',
     description: 'Fix race conditions in inventory sync. Affects order management.',
-    startDate: offset(0), endDate: offset(6),
+    startDate: offset(-5), endDate: null,
     environmentId: 'e2-prod', status: 'in-progress',
     assignee: 'Hendra Kurniawan', modules: ['m-inv', 'm-ord'], priority: 'high',
     deployments: [

@@ -13,8 +13,10 @@ interface DeploymentRange {
 
 /**
  * Expand a ticket's deployment history into date ranges per environment.
- * Each range = [deployDate, nextDeployDate) — last entry is open-ended (FAR_FUTURE).
- * Tickets with no deployments fall back to startDate/endDate in their current env.
+ * - Intermediate entries: [deployDate, nextDeployDate)
+ * - Last entry: [deployDate, ticket.endDate] if endDate set, else [deployDate, deployDate]
+ *   (point-in-time: conflict window closes at last deployment unless explicitly extended)
+ * - No deployments: falls back to [startDate, endDate]
  */
 function getDeploymentRanges(ticket: Ticket): DeploymentRange[] {
   if (ticket.status === 'done' || ticket.status === 'cancelled') return []
@@ -35,7 +37,8 @@ function getDeploymentRanges(ticket: Ticket): DeploymentRange[] {
     ...base,
     environmentId: dep.environmentId,
     startDate: dep.date,
-    endDate: i < sorted.length - 1 ? sorted[i + 1].date : FAR_FUTURE,
+    // Last entry: use ticket.endDate if explicitly set, otherwise close at this deployment date
+    endDate: i < sorted.length - 1 ? sorted[i + 1].date : (ticket.endDate ?? dep.date),
   }))
 }
 

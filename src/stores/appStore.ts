@@ -3,6 +3,22 @@ import type { Project, Ticket, AppView } from '../types'
 import { INIT_PROJECTS, INIT_TICKETS } from '../lib/data'
 import { generateId, TODAY_STR } from '../lib/utils'
 
+/**
+ * endDate = tanggal deployment terbaru ke environment saat ini (ticket.environmentId).
+ * Jika belum pernah deploy ke env tersebut, endDate = null.
+ */
+function deriveEndDate(ticket: Ticket): string | null {
+  if (ticket.deployments.length === 0) return ticket.endDate
+  const toCurrentEnv = ticket.deployments
+    .filter(d => d.environmentId === ticket.environmentId)
+    .sort((a, b) => b.date.localeCompare(a.date))
+  return toCurrentEnv[0]?.date ?? null
+}
+
+function withDerivedEndDate(ticket: Ticket): Ticket {
+  return { ...ticket, endDate: deriveEndDate(ticket) }
+}
+
 interface NewTicketDefaults {
   status?: Ticket['status']
   environmentId?: string
@@ -42,7 +58,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   projects: INIT_PROJECTS,
-  tickets: INIT_TICKETS,
+  tickets: INIT_TICKETS.map(withDerivedEndDate),
   selectedProjectId: 'p1',
   view: 'timeline',
   activeTicketId: null,
@@ -66,11 +82,12 @@ export const useAppStore = create<AppState>((set) => ({
 
   saveTicket: (ticket) =>
     set((s) => {
-      const exists = s.tickets.some((t) => t.id === ticket.id)
+      const t = withDerivedEndDate(ticket)
+      const exists = s.tickets.some((x) => x.id === t.id)
       return {
         tickets: exists
-          ? s.tickets.map((t) => (t.id === ticket.id ? ticket : t))
-          : [...s.tickets, ticket],
+          ? s.tickets.map((x) => (x.id === t.id ? t : x))
+          : [...s.tickets, t],
         activeTicketId: null,
         ticketMode: null,
       }
@@ -83,24 +100,24 @@ export const useAppStore = create<AppState>((set) => ({
       ticketMode: null,
     })),
 
-  moveTicket: (id, startDate, endDate, environmentId?) =>
+  moveTicket: (id, startDate, _endDate, environmentId?) =>
     set((s) => ({
       tickets: s.tickets.map((t) => {
         if (t.id !== id) return t
         const envChanged = environmentId && environmentId !== t.environmentId
-        return {
+        const updated: Ticket = {
           ...t,
           startDate,
-          endDate,
           ...(environmentId ? { environmentId } : {}),
-          // auto-record deployment entry when env changes
           deployments: envChanged
             ? [
                 ...t.deployments,
                 { id: generateId('dep'), environmentId: environmentId!, date: startDate },
               ]
             : t.deployments,
+          endDate: t.endDate,  // placeholder, re-derived below
         }
+        return withDerivedEndDate(updated)
       }),
     })),
 
@@ -111,8 +128,8 @@ export const useAppStore = create<AppState>((set) => ({
         const sorted = [...t.deployments].sort((a, b) => a.date.localeCompare(b.date))
         const idx = sorted.findIndex(d => d.environmentId === environmentId && d.date === date)
         if (idx === -1) return t
-        // Keep only entries BEFORE this index (cascade: delete this + all later entries)
-        return { ...t, deployments: sorted.slice(0, idx) }
+        const updated: Ticket = { ...t, deployments: sorted.slice(0, idx) }
+        return withDerivedEndDate(updated)
       }),
     })),
 
