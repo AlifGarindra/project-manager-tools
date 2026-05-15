@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { C } from './components/ui/tokens'
 import { Badge } from './components/ui/Badge'
 import { Btn } from './components/ui/Btn'
@@ -11,6 +12,7 @@ import { ModuleRegistryModal } from './components/project/ModuleRegistryModal'
 import { EnvManagerModal } from './components/project/EnvManagerModal'
 import { useAppStore } from './stores/appStore'
 import { useConflicts } from './hooks/useConflicts'
+import { useAuthStore } from './stores/authStore'
 
 function NavTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   const [hov, setHov] = useState(false)
@@ -32,6 +34,8 @@ function NavTab({ label, active, onClick }: { label: string; active: boolean; on
 }
 
 export default function App() {
+  const { user, signOut } = useAuthStore()
+  const navigate = useNavigate()
   const {
     view, setView,
     projects, tickets, selectedProjectId,
@@ -43,6 +47,14 @@ export default function App() {
 
   const allConflicts = useConflicts(tickets)
   const [confBtnHov, setConfBtnHov] = useState(false)
+  const [avatarHov, setAvatarHov] = useState(false)
+
+  const userInitial = (user?.email ?? 'PM')[0].toUpperCase()
+
+  async function handleSignOut() {
+    await signOut()
+    navigate('/', { replace: true })
+  }
 
   const project   = projects.find(p => p.id === selectedProjectId)
   const pConf     = allConflicts.filter(c => c.projectId === selectedProjectId)
@@ -134,12 +146,27 @@ export default function App() {
           </>
         )}
 
-        {/* Avatar */}
-        <div style={{
-          width: 26, height: 26, borderRadius: '50%',
-          background: '#27272a', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 10, fontWeight: 700, color: '#71717a', letterSpacing: '0.04em', flexShrink: 0,
-        }}>PM</div>
+        {/* Avatar + sign out */}
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <button
+            title={user?.email ?? ''}
+            onMouseEnter={() => setAvatarHov(true)}
+            onMouseLeave={() => setAvatarHov(false)}
+            onClick={handleSignOut}
+            style={{
+              width: 26, height: 26, borderRadius: '50%',
+              background: avatarHov ? C.hard : '#27272a',
+              border: `1px solid ${avatarHov ? C.hard + '60' : C.border}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 10, fontWeight: 700,
+              color: avatarHov ? '#fff' : '#71717a',
+              letterSpacing: '0.04em', cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            {avatarHov ? '→' : userInitial}
+          </button>
+        </div>
       </nav>
 
       {/* Main content */}
