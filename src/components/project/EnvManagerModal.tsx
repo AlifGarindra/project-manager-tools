@@ -3,6 +3,7 @@ import { C } from '../ui/tokens'
 import { Btn } from '../ui/Btn'
 import { Input } from '../ui/FormControls'
 import { useAppStore } from '../../stores/appStore'
+import { useProjects, useUpdateProject } from '../../hooks/useProjects'
 import { generateId } from '../../lib/utils'
 import type { Environment } from '../../types'
 
@@ -38,23 +39,27 @@ function ModalShell({ title, subtitle, onClose, children }: {
 }
 
 export function EnvManagerModal() {
-  const { projects, selectedProjectId, saveProject, closeEnvManager } = useAppStore()
+  const { selectedProjectId, closeEnvManager } = useAppStore()
+  const { data: projects = [] }                = useProjects()
+  const { mutate: updateProject, isPending }   = useUpdateProject()
+
   const project = projects.find(p => p.id === selectedProjectId)!
-  const [envs, setEnvs] = useState<Environment[]>([...project.environments])
+  const [envs, setEnvs]   = useState<Environment[]>(() => project ? [...project.environments] : [])
   const [name, setName]   = useState('')
   const [color, setColor] = useState('#6366f1')
 
+  if (!project) return null
+
   const add = () => {
     if (!name.trim()) return
-    setEnvs(prev => [...prev, { id: generateId('env'), name: name.trim().toLowerCase(), color, order: prev.length }])
+    setEnvs(prev => [...prev, { id: generateId(), name: name.trim().toLowerCase(), color, order: prev.length }])
     setName('')
   }
 
   const remove = (id: string) => setEnvs(prev => prev.filter(e => e.id !== id))
 
   const save = () => {
-    saveProject({ ...project, environments: envs })
-    closeEnvManager()
+    updateProject({ ...project, environments: envs }, { onSuccess: closeEnvManager })
   }
 
   return (
@@ -89,7 +94,9 @@ export function EnvManagerModal() {
 
       <div style={{ display: 'flex', gap: 7, justifyContent: 'flex-end', marginTop: 8 }}>
         <Btn variant="default" size="sm" onClick={closeEnvManager}>Cancel</Btn>
-        <Btn variant="primary" size="sm" onClick={save}>Save Environments</Btn>
+        <Btn variant="primary" size="sm" onClick={save} disabled={isPending}>
+          {isPending ? 'Saving…' : 'Save Environments'}
+        </Btn>
       </div>
     </ModalShell>
   )

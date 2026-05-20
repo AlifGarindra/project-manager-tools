@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { format } from 'date-fns'
 import { C } from '../ui/tokens'
@@ -6,7 +6,9 @@ import { Badge } from '../ui/Badge'
 import { Btn } from '../ui/Btn'
 import { useAppStore } from '../../stores/appStore'
 import { useConflicts } from '../../hooks/useConflicts'
-import { daysBetween, addDays, offset, TODAY_STR, formatDate } from '../../lib/utils'
+import { useTickets, useSaveTicket } from '../../hooks/useTickets'
+import { useProjects } from '../../hooks/useProjects'
+import { daysBetween, addDays, offset, TODAY_STR, formatDate, generateId, withDerivedEndDate } from '../../lib/utils'
 import type { Ticket, ConflictPair } from '../../types'
 
 const LEFT_W     = 148
@@ -439,8 +441,35 @@ function ConflictZoneOverlay({ conflict, viewStart, dw }: { conflict: ConflictPa
 
 // ── Main Timeline View ────────────────────────────────────────────────────────
 export function TimelineView() {
-  const { tickets, projects, selectedProjectId, openTicket, newTicket, saveTicket, moveTicket, removeDeploymentEntry } = useAppStore()
-  const allConflicts = useConflicts(tickets)
+  const { selectedProjectId, openTicket, newTicket } = useAppStore()
+  const { data: allTickets = [] } = useTickets()
+  const { data: projects = [] }   = useProjects()
+  const { mutate: saveTicket }    = useSaveTicket()
+  const allConflicts = useConflicts(allTickets)
+
+  const moveTicket = useCallback((id: string, startDate: string, _endDate: string, environmentId?: string) => {
+    const ticket = allTickets.find(t => t.id === id)
+    if (!ticket) return
+    const envChanged = environmentId && environmentId !== ticket.environmentId
+    const updated: Ticket = {
+      ...ticket,
+      startDate,
+      ...(environmentId ? { environmentId } : {}),
+      deployments: envChanged
+        ? [...ticket.deployments, { id: generateId(), environmentId: environmentId!, date: startDate }]
+        : ticket.deployments,
+    }
+    saveTicket(withDerivedEndDate(updated))
+  }, [allTickets, saveTicket])
+
+  const removeDeploymentEntry = useCallback((ticketId: string, environmentId: string, date: string) => {
+    const ticket = allTickets.find(t => t.id === ticketId)
+    if (!ticket) return
+    const sorted = [...ticket.deployments].sort((a, b) => a.date.localeCompare(b.date))
+    const idx = sorted.findIndex(d => d.environmentId === environmentId && d.date === date)
+    if (idx === -1) return
+    saveTicket(withDerivedEndDate({ ...ticket, deployments: sorted.slice(0, idx) }))
+  }, [allTickets, saveTicket])
 
   const [dw, setDw]     = useState(DEFAULT_DW)
   const [vsOff, setVsOff] = useState(-10)
@@ -451,7 +480,7 @@ export function TimelineView() {
   const dates      = useMemo(() => buildDates(viewStart, TOTAL_DAYS), [viewStart])
   const months     = useMemo(() => buildMonths(dates), [dates])
   const project    = projects.find(p => p.id === selectedProjectId)
-  const pTickets   = tickets.filter(t => t.projectId === selectedProjectId)
+  const pTickets   = allTickets.filter(t => t.projectId === selectedProjectId)
   const pConf      = allConflicts.filter(c => c.projectId === selectedProjectId)
   const sortedEnvs = project ? [...project.environments].sort((a, b) => a.order - b.order) : []
   const sortedEnvColors = sortedEnvs.map(e => ({ id: e.id, color: e.color }))

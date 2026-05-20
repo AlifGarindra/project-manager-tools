@@ -7,6 +7,8 @@ import { Hr } from '../ui/FormControls'
 import { Field } from '../ui/FormControls'
 import { useAppStore } from '../../stores/appStore'
 import { useConflicts } from '../../hooks/useConflicts'
+import { useProjects, useCreateProject } from '../../hooks/useProjects'
+import { useTickets } from '../../hooks/useTickets'
 import { formatDate, addDays, TODAY_STR } from '../../lib/utils'
 import type { Project, Ticket, ConflictPair } from '../../types'
 
@@ -48,11 +50,8 @@ function ProjectCard({
       style={{
         background: hov ? '#161618' : C.surface,
         border: `1px solid ${hardC > 0 ? 'rgba(239,68,68,0.35)' : hov ? C.borderEl : C.border}`,
-        borderRadius: 8,
-        padding: '18px 20px',
-        cursor: 'pointer',
-        transition: 'background 0.12s, border-color 0.12s',
-        display: 'flex', flexDirection: 'column',
+        borderRadius: 8, padding: '18px 20px', cursor: 'pointer',
+        transition: 'background 0.12s, border-color 0.12s', display: 'flex', flexDirection: 'column',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -129,14 +128,10 @@ function NewProjectCard({ onCreate }: { onCreate: () => void }) {
       style={{
         background: 'transparent',
         border: `1px dashed ${hov ? C.borderEl : C.border + 'aa'}`,
-        borderRadius: 8,
-        padding: '18px 20px',
-        cursor: 'pointer',
+        borderRadius: 8, padding: '18px 20px', cursor: 'pointer',
         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        gap: 8, minHeight: 180,
-        color: hov ? C.textSec : C.textMut,
-        fontFamily: 'Inter, sans-serif', fontSize: 12,
-        transition: 'all 0.12s',
+        gap: 8, minHeight: 180, color: hov ? C.textSec : C.textMut,
+        fontFamily: 'Inter, sans-serif', fontSize: 12, transition: 'all 0.12s',
       }}
     >
       <div style={{
@@ -151,8 +146,12 @@ function NewProjectCard({ onCreate }: { onCreate: () => void }) {
 }
 
 export function DashboardView() {
-  const { projects, tickets, createProject, setProject } = useAppStore()
-  const conflicts = useConflicts(tickets)
+  const { setProject } = useAppStore()
+  const { data: projects = [], isLoading } = useProjects()
+  const { data: allTickets = [] }          = useTickets()
+  const { mutate: createProject, isPending: creating, error: createError, reset: resetCreate } = useCreateProject()
+  const conflicts = useConflicts(allTickets)
+
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
@@ -162,10 +161,18 @@ export function DashboardView() {
 
   const handleCreate = () => {
     if (!newName.trim()) return
-    createProject(newName, newDesc)
-    setShowNew(false)
-    setNewName('')
-    setNewDesc('')
+    resetCreate()
+    createProject(
+      { name: newName.trim(), description: newDesc.trim() },
+      {
+        onSuccess: (project) => {
+          setProject(project.id)
+          setShowNew(false)
+          setNewName('')
+          setNewDesc('')
+        },
+      }
+    )
   }
 
   return (
@@ -176,10 +183,15 @@ export function DashboardView() {
           <div style={{ flex: 1 }}>
             <h1 style={{ margin: '0 0 5px', fontSize: 22, fontWeight: 700, color: C.text }}>Projects</h1>
             <p style={{ margin: 0, fontSize: 12, color: C.textMut }}>
-              {projects.length} project{projects.length !== 1 ? 's' : ''} · {tickets.length} total tickets ·{' '}
-              {totalConflicts > 0
-                ? <span style={{ color: hardTotal > 0 ? C.hard : C.soft }}>{totalConflicts} active conflict{totalConflicts !== 1 ? 's' : ''}</span>
-                : <span style={{ color: C.green }}>no active conflicts</span>
+              {isLoading
+                ? 'Loading…'
+                : <>
+                    {projects.length} project{projects.length !== 1 ? 's' : ''} · {allTickets.length} total tickets ·{' '}
+                    {totalConflicts > 0
+                      ? <span style={{ color: hardTotal > 0 ? C.hard : C.soft }}>{totalConflicts} active conflict{totalConflicts !== 1 ? 's' : ''}</span>
+                      : <span style={{ color: C.green }}>no active conflicts</span>
+                    }
+                  </>
               }
             </p>
           </div>
@@ -191,7 +203,7 @@ export function DashboardView() {
             <ProjectCard
               key={p.id}
               project={p}
-              allTickets={tickets}
+              allTickets={allTickets}
               conflicts={conflicts}
               onSelect={setProject}
             />
@@ -226,9 +238,20 @@ export function DashboardView() {
             <p style={{ margin: 0, fontSize: 11, color: C.textMut, lineHeight: 1.5 }}>
               Default environments (production, staging, development) will be created. You can edit them after.
             </p>
+            {createError && (
+              <div style={{
+                padding: '9px 12px', borderRadius: 6,
+                background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.3)',
+                fontSize: 11, color: '#ef4444', lineHeight: 1.5,
+              }}>
+                {(createError as Error).message}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 7, justifyContent: 'flex-end' }}>
-              <Btn variant="default" size="sm" onClick={() => setShowNew(false)}>Cancel</Btn>
-              <Btn variant="primary" size="sm" onClick={handleCreate}>Create Project</Btn>
+              <Btn variant="default" size="sm" onClick={() => { setShowNew(false); resetCreate() }}>Cancel</Btn>
+              <Btn variant="primary" size="sm" onClick={handleCreate} disabled={creating}>
+                {creating ? 'Creating…' : 'Create Project'}
+              </Btn>
             </div>
           </div>
         </div>

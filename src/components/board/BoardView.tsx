@@ -5,6 +5,8 @@ import { Btn } from '../ui/Btn'
 import { PriorityDot } from '../ui/PriorityDot'
 import { useAppStore } from '../../stores/appStore'
 import { useConflicts } from '../../hooks/useConflicts'
+import { useTickets, useSaveTicket } from '../../hooks/useTickets'
+import { useProjects } from '../../hooks/useProjects'
 import { formatDate } from '../../lib/utils'
 import type { Ticket, Project, ConflictPair } from '../../types'
 
@@ -49,12 +51,10 @@ function BoardCard({ ticket, project, conflicts, onClick }: {
       }}
     >
       {hasCon && <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 2, background: conColor }} />}
-
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginBottom: 7 }}>
         <PriorityDot priority={ticket.priority} />
         <span style={{ fontSize: 12, fontWeight: 500, color: C.text, flex: 1, lineHeight: 1.45 }}>{ticket.title}</span>
       </div>
-
       {ticket.modules.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 8 }}>
           {ticket.modules.slice(0, 3).map(mid => {
@@ -69,7 +69,6 @@ function BoardCard({ ticket, project, conflicts, onClick }: {
           {ticket.modules.length > 3 && <span style={{ fontSize: 9, color: C.textMut }}>+{ticket.modules.length - 3}</span>}
         </div>
       )}
-
       <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
         {env && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -96,7 +95,7 @@ function BoardColumn({ col, tickets, project, conflicts, onOpen, onNew, onDrop }
   onNew: (status: Ticket['status']) => void
   onDrop: (ticketId: string, newStatus: Ticket['status']) => void
 }) {
-  const [dragOver, setDragOver] = useState(false)
+  const [dragOver,  setDragOver]  = useState(false)
   const [hoverAdd, setHoverAdd] = useState(false)
 
   return (
@@ -128,14 +127,9 @@ function BoardColumn({ col, tickets, project, conflicts, onOpen, onNew, onDrop }
           {tickets.length}
         </span>
       </div>
-
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 8px 0', display: 'flex', flexDirection: 'column', gap: 6 }}>
         {tickets.map(ticket => (
-          <div
-            key={ticket.id}
-            draggable
-            onDragStart={e => { e.dataTransfer.setData('ticketId', ticket.id) }}
-          >
+          <div key={ticket.id} draggable onDragStart={e => { e.dataTransfer.setData('ticketId', ticket.id) }}>
             <BoardCard ticket={ticket} project={project} conflicts={conflicts} onClick={onOpen} />
           </div>
         ))}
@@ -143,7 +137,6 @@ function BoardColumn({ col, tickets, project, conflicts, onOpen, onNew, onDrop }
           <div style={{ padding: '20px 8px', textAlign: 'center', color: C.textMut, fontSize: 11 }}>No tickets</div>
         )}
       </div>
-
       <div style={{ padding: 8, flexShrink: 0 }}>
         <button
           onMouseEnter={() => setHoverAdd(true)}
@@ -157,19 +150,21 @@ function BoardColumn({ col, tickets, project, conflicts, onOpen, onNew, onDrop }
             fontSize: 11, cursor: 'pointer', fontFamily: 'Inter, sans-serif',
             transition: 'all 0.1s',
           }}
-        >
-          + Add ticket
-        </button>
+        >+ Add ticket</button>
       </div>
     </div>
   )
 }
 
 export function BoardView() {
-  const { tickets, projects, selectedProjectId, openTicket, newTicket, saveTicket } = useAppStore()
-  const allConflicts = useConflicts(tickets)
-  const project = projects.find(p => p.id === selectedProjectId)
-  const pTickets = tickets.filter(t => t.projectId === selectedProjectId)
+  const { selectedProjectId, openTicket, newTicket } = useAppStore()
+  const { data: allTickets = [] } = useTickets()
+  const { data: projects = [] }   = useProjects()
+  const { mutate: saveTicket }    = useSaveTicket()
+  const allConflicts = useConflicts(allTickets)
+
+  const project  = projects.find(p => p.id === selectedProjectId)
+  const pTickets = allTickets.filter(t => t.projectId === selectedProjectId)
   const pConf    = allConflicts.filter(c => c.projectId === selectedProjectId)
   const hardC    = pConf.filter(c => c.type === 'hard').length
   const softC    = pConf.filter(c => c.type === 'soft').length

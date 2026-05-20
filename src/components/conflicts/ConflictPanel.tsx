@@ -4,6 +4,8 @@ import { Badge } from '../ui/Badge'
 import { StatusBadge } from '../ui/StatusBadge'
 import { useAppStore } from '../../stores/appStore'
 import { useConflicts } from '../../hooks/useConflicts'
+import { useTickets } from '../../hooks/useTickets'
+import { useProjects } from '../../hooks/useProjects'
 import { formatDate, daysBetween } from '../../lib/utils'
 import type { ConflictPair, Ticket, Project } from '../../types'
 
@@ -44,13 +46,11 @@ function ConflictItem({
           </span>
           <span style={{ fontSize: 10, color: C.textMut, marginLeft: 4 }}>{open ? '▲' : '▼'}</span>
         </div>
-
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <span style={{ fontSize: 11, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>{t1.title}</span>
           <span style={{ fontSize: 9, color: C.textMut, paddingLeft: 2 }}>vs</span>
           <span style={{ fontSize: 11, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>{t2.title}</span>
         </div>
-
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
           {mods.map(m => m && (
             <span key={m.id} style={{
@@ -97,23 +97,24 @@ function ConflictItem({
 }
 
 export function ConflictPanel() {
-  const { tickets, projects, selectedProjectId, toggleConflicts, openTicket } = useAppStore()
-  const allConflicts = useConflicts(tickets)
-  const project   = projects.find(p => p.id === selectedProjectId)
-  const pTickets  = tickets.filter(t => t.projectId === selectedProjectId)
-  const pConf     = allConflicts.filter(c => c.projectId === selectedProjectId)
-  const hardC     = pConf.filter(c => c.type === 'hard')
-  const softC     = pConf.filter(c => c.type === 'soft')
+  const { selectedProjectId, toggleConflicts, openTicket } = useAppStore()
+  const { data: allTickets = [] } = useTickets()
+  const { data: projects = [] }   = useProjects()
+  const allConflicts = useConflicts(allTickets)
+
+  const project  = projects.find(p => p.id === selectedProjectId)
+  const pTickets = allTickets.filter(t => t.projectId === selectedProjectId)
+  const pConf    = allConflicts.filter(c => c.projectId === selectedProjectId)
+  const hardC    = pConf.filter(c => c.type === 'hard')
+  const softC    = pConf.filter(c => c.type === 'soft')
 
   if (!project) return null
 
   return (
     <div style={{
       width: 290, flexShrink: 0,
-      background: C.surface,
-      borderLeft: `1px solid ${C.border}`,
-      display: 'flex', flexDirection: 'column',
-      overflow: 'hidden',
+      background: C.surface, borderLeft: `1px solid ${C.border}`,
+      display: 'flex', flexDirection: 'column', overflow: 'hidden',
     }}>
       <div style={{
         padding: '0 12px', height: 40, flexShrink: 0,

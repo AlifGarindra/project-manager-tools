@@ -1,4 +1,5 @@
 import { format, addDays as dfAddDays, differenceInCalendarDays } from 'date-fns'
+import type { Ticket } from '../types'
 
 export const TODAY = new Date()
 export const TODAY_STR = format(TODAY, 'yyyy-MM-dd')
@@ -27,6 +28,20 @@ export function formatDateFull(s: string | null): string {
   return format(new Date(s), 'MMM d, yyyy')
 }
 
-export function generateId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+// Supabase tables use uuid type — must produce valid UUIDs
+export function generateId(_prefix?: string): string {
+  return crypto.randomUUID()
+}
+
+// endDate = latest deployment date to the ticket's current environment
+export function deriveEndDate(ticket: Ticket): string | null {
+  if (ticket.deployments.length === 0) return ticket.endDate
+  const toCurrentEnv = ticket.deployments
+    .filter(d => d.environmentId === ticket.environmentId)
+    .sort((a, b) => b.date.localeCompare(a.date))
+  return toCurrentEnv[0]?.date ?? null
+}
+
+export function withDerivedEndDate(ticket: Ticket): Ticket {
+  return { ...ticket, endDate: deriveEndDate(ticket) }
 }

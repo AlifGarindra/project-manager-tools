@@ -8,23 +8,30 @@ import { PriorityDot } from '../ui/PriorityDot'
 import { ModuleChip } from '../ui/ModuleChip'
 import { useAppStore } from '../../stores/appStore'
 import { useConflicts } from '../../hooks/useConflicts'
-import { generateId, TODAY_STR, addDays, formatDateFull, formatDate } from '../../lib/utils'
+import { useTickets, useSaveTicket, useDeleteTicket } from '../../hooks/useTickets'
+import { useProjects } from '../../hooks/useProjects'
+import { generateId, TODAY_STR, addDays, formatDateFull, formatDate, withDerivedEndDate } from '../../lib/utils'
 import type { Ticket } from '../../types'
 
 export function TicketModal() {
   const {
-    tickets, projects, selectedProjectId,
+    selectedProjectId,
     activeTicketId, ticketMode, newTicketDefaults,
-    closeTicket, saveTicket, deleteTicket, openTicket,
+    closeTicket, openTicket,
   } = useAppStore()
-  const allConflicts = useConflicts(tickets)
+
+  const { data: allTickets = [] } = useTickets()
+  const { data: projects = [] }   = useProjects()
+  const { mutate: saveTicket }    = useSaveTicket()
+  const { mutate: deleteTicket }  = useDeleteTicket()
+  const allConflicts = useConflicts(allTickets)
 
   const isOpen  = activeTicketId !== null || ticketMode === 'create'
   const project = projects.find(p => p.id === selectedProjectId)
-  const existing = activeTicketId ? tickets.find(t => t.id === activeTicketId) : null
+  const existing = activeTicketId ? allTickets.find(t => t.id === activeTicketId) : null
 
   const blankForm = useCallback((): Ticket => ({
-    id: generateId('t'),
+    id: generateId(),
     projectId: selectedProjectId,
     title: '',
     description: '',
@@ -35,10 +42,11 @@ export function TicketModal() {
     assignee: '',
     modules: [],
     priority: 'medium',
+    deployments: [],
     ...newTicketDefaults,
   }), [selectedProjectId, project, newTicketDefaults])
 
-  const [form, setForm]   = useState<Ticket>(() => existing ? { ...existing } : blankForm())
+  const [form, setForm]     = useState<Ticket>(() => existing ? { ...existing } : blankForm())
   const [editMode, setEdit] = useState(ticketMode === 'create')
 
   useEffect(() => {
@@ -69,7 +77,12 @@ export function TicketModal() {
 
   const handleSave = () => {
     if (!form.title.trim()) return
-    saveTicket(form)
+    saveTicket(withDerivedEndDate(form), { onSuccess: closeTicket })
+  }
+
+  const handleDelete = () => {
+    if (!existing) return
+    deleteTicket(existing.id, { onSuccess: closeTicket })
   }
 
   const modulesByCategory = project.modules.reduce<Record<string, typeof project.modules>>((acc, m) => {
@@ -231,7 +244,7 @@ export function TicketModal() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                 {tc.map(c => {
                   const otherId = c.ticket1Id === activeTicketId ? c.ticket2Id : c.ticket1Id
-                  const other   = tickets.find(t => t.id === otherId)
+                  const other   = allTickets.find(t => t.id === otherId)
                   const mNames  = c.modules.map(id => project.modules.find(m => m.id === id)?.name).filter(Boolean)
                   return (
                     <div
@@ -263,7 +276,7 @@ export function TicketModal() {
         {editMode && (
           <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: 7, flexShrink: 0 }}>
             {existing && (
-              <Btn variant="danger" size="sm" onClick={() => deleteTicket(existing.id)}>Delete</Btn>
+              <Btn variant="danger" size="sm" onClick={handleDelete}>Delete</Btn>
             )}
             <div style={{ flex: 1 }} />
             <Btn variant="default" size="sm" onClick={() => {

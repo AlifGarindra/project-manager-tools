@@ -13,6 +13,8 @@ import { EnvManagerModal } from './components/project/EnvManagerModal'
 import { useAppStore } from './stores/appStore'
 import { useConflicts } from './hooks/useConflicts'
 import { useAuthStore } from './stores/authStore'
+import { useTickets } from './hooks/useTickets'
+import { useProjects } from './hooks/useProjects'
 
 function NavTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   const [hov, setHov] = useState(false)
@@ -38,16 +40,18 @@ export default function App() {
   const navigate = useNavigate()
   const {
     view, setView,
-    projects, tickets, selectedProjectId,
+    selectedProjectId,
     conflictPanelOpen, toggleConflicts,
     registryOpen, openRegistry,
     envManagerOpen, openEnvManager,
-    setProject: _setProject,
   } = useAppStore()
 
-  const allConflicts = useConflicts(tickets)
+  const { data: allTickets = [] } = useTickets()
+  const { data: projects = [] }   = useProjects()
+  const allConflicts = useConflicts(allTickets)
+
   const [confBtnHov, setConfBtnHov] = useState(false)
-  const [avatarHov, setAvatarHov] = useState(false)
+  const [avatarHov,  setAvatarHov]  = useState(false)
 
   const userInitial = (user?.email ?? 'PM')[0].toUpperCase()
 
@@ -56,10 +60,10 @@ export default function App() {
     navigate('/', { replace: true })
   }
 
-  const project   = projects.find(p => p.id === selectedProjectId)
-  const pConf     = allConflicts.filter(c => c.projectId === selectedProjectId)
-  const hardC     = pConf.filter(c => c.type === 'hard').length
-  const softC     = pConf.filter(c => c.type === 'soft').length
+  const project    = projects.find(p => p.id === selectedProjectId)
+  const pConf      = allConflicts.filter(c => c.projectId === selectedProjectId)
+  const hardC      = pConf.filter(c => c.type === 'hard').length
+  const softC      = pConf.filter(c => c.type === 'soft').length
   const totalConfl = pConf.length
   const inProject  = view === 'timeline' || view === 'board'
 

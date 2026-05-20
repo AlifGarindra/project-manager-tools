@@ -3,6 +3,7 @@ import { C } from '../ui/tokens'
 import { Btn } from '../ui/Btn'
 import { Input, Sel } from '../ui/FormControls'
 import { useAppStore } from '../../stores/appStore'
+import { useProjects, useUpdateProject } from '../../hooks/useProjects'
 import { generateId } from '../../lib/utils'
 import type { Module } from '../../types'
 
@@ -36,26 +37,30 @@ function ModalShell({ title, subtitle, onClose, children }: {
 }
 
 export function ModuleRegistryModal() {
-  const { projects, selectedProjectId, saveProject, closeRegistry } = useAppStore()
+  const { selectedProjectId, closeRegistry } = useAppStore()
+  const { data: projects = [] }              = useProjects()
+  const { mutate: updateProject, isPending } = useUpdateProject()
+
   const project = projects.find(p => p.id === selectedProjectId)!
-  const [modules, setModules] = useState<Module[]>([...project.modules])
+  const [modules, setModules] = useState<Module[]>(() => project ? [...project.modules] : [])
   const [name, setName] = useState('')
   const [cat, setCat]   = useState('Core')
+
+  if (!project) return null
 
   const categories = [...new Set(modules.map(m => m.category))]
   const allCats    = [...new Set([...categories, 'Core', 'Auth', 'Infra', 'Operations', 'Other'])]
 
   const add = () => {
     if (!name.trim()) return
-    setModules(prev => [...prev, { id: generateId('m'), name: name.trim(), category: cat }])
+    setModules(prev => [...prev, { id: generateId(), name: name.trim(), category: cat }])
     setName('')
   }
 
   const remove = (id: string) => setModules(prev => prev.filter(m => m.id !== id))
 
   const save = () => {
-    saveProject({ ...project, modules })
-    closeRegistry()
+    updateProject({ ...project, modules }, { onSuccess: closeRegistry })
   }
 
   return (
@@ -87,7 +92,9 @@ export function ModuleRegistryModal() {
 
       <div style={{ display: 'flex', gap: 7, justifyContent: 'flex-end', marginTop: 8 }}>
         <Btn variant="default" size="sm" onClick={closeRegistry}>Cancel</Btn>
-        <Btn variant="primary" size="sm" onClick={save}>Save Registry</Btn>
+        <Btn variant="primary" size="sm" onClick={save} disabled={isPending}>
+          {isPending ? 'Saving…' : 'Save Registry'}
+        </Btn>
       </div>
     </ModalShell>
   )
