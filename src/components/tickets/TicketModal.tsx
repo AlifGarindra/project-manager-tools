@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { C } from '../ui/tokens'
 import { Badge } from '../ui/Badge'
 import { Btn } from '../ui/Btn'
@@ -6,12 +6,39 @@ import { Input, Sel, Textarea, Field } from '../ui/FormControls'
 import { StatusBadge } from '../ui/StatusBadge'
 import { PriorityDot } from '../ui/PriorityDot'
 import { ModuleChip } from '../ui/ModuleChip'
+import { ResolutionEditor } from '../conflicts/ResolutionEditor'
 import { useAppStore } from '../../stores/appStore'
-import { useConflicts } from '../../hooks/useConflicts'
+import { useConflicts, useDraftConflicts } from '../../hooks/useConflicts'
 import { useTickets, useSaveTicket, useDeleteTicket } from '../../hooks/useTickets'
 import { useProjects } from '../../hooks/useProjects'
-import { generateId, TODAY_STR, addDays, formatDateFull, formatDate, withDerivedEndDate } from '../../lib/utils'
-import type { Ticket } from '../../types'
+import { useConflictResolutions } from '../../hooks/useConflictResolutions'
+import { findNearestFreeDate, findResolution } from '../../lib/conflict'
+import { generateId, TODAY_STR, formatDateFull, formatDate, withDerivedEndDate, addDays, daysBetween } from '../../lib/utils'
+import type { Ticket, TicketType } from '../../types'
+
+const TICKET_TYPES: { value: TicketType; label: string }[] = [
+  { value: 'backend',      label: 'Backend' },
+  { value: 'mobile',       label: 'Mobile' },
+  { value: 'frontend-web', label: 'Frontend Web' },
+]
+
+function LinkValue({ url }: { url: string }) {
+  if (!url) return <span style={{ fontSize: 12, color: C.textMut, display: 'block', padding: '4px 0' }}>—</span>
+  return (
+    <a
+      href={url} target="_blank" rel="noreferrer"
+      style={{
+        fontSize: 12, color: C.blue, display: 'block', padding: '4px 0',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        textDecoration: 'none',
+      }}
+      onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+      onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+    >
+      {url} ↗
+    </a>
+  )
+}
 
 export function TicketModal() {
   const {
@@ -22,7 +49,7 @@ export function TicketModal() {
 
   const { data: allTickets = [] } = useTickets()
   const { data: projects = [] }   = useProjects()
-  const { mutate: saveTicket }    = useSaveTicket()
+  const { mutate: saveTicket, isPending: saving, error: saveError, reset: resetSave } = useSaveTicket()
   const { mutate: deleteTicket }  = useDeleteTicket()
   const allConflicts = useConflicts(allTickets)
 
@@ -30,21 +57,36 @@ export function TicketModal() {
   const project = projects.find(p => p.id === selectedProjectId)
   const existing = activeTicketId ? allTickets.find(t => t.id === activeTicketId) : null
 
-  const blankForm = useCallback((): Ticket => ({
-    id: generateId(),
-    projectId: selectedProjectId,
-    title: '',
-    description: '',
-    startDate: TODAY_STR,
-    endDate: addDays(TODAY_STR, 4),
-    environmentId: project?.environments[0]?.id ?? '',
-    status: 'planned',
-    assignee: '',
-    modules: [],
-    priority: 'medium',
-    deployments: [],
-    ...newTicketDefaults,
-  }), [selectedProjectId, project, newTicketDefaults])
+  // sorted ascending by order: [0]=topmost (production), [last]=lowest (development)
+  const sortedEnvsByOrder = project
+    ? [...project.environments].sort((a, b) => a.order - b.order)
+    : []
+  const lowestEnvId = sortedEnvsByOrder[sortedEnvsByOrder.length - 1]?.id ?? ''
+  const topEnvId    = sortedEnvsByOrder[0]?.id ?? ''
+
+  const blankForm = useCallback((): Ticket => {
+    const t: Ticket = {
+      id: generateId(),
+      projectId: selectedProjectId,
+      title: '',
+      description: '',
+      startDate: TODAY_STR,
+      endDate: null,          // undetermined until deployed to topmost env
+      environmentId: lowestEnvId,
+      status: 'planned',
+      assignee: '',
+      modules: [],
+      priority: 'medium',
+      ticketType: 'backend',
+      sowLink: '',
+      jiraLink: '',
+      deployments: [],
+      ...newTicketDefaults,
+    }
+    t.environmentId = lowestEnvId  // always force lowest env regardless of defaults
+    t.endDate = null
+    return t
+  }, [selectedProjectId, lowestEnvId, newTicketDefaults])
 
   const [form, setForm]     = useState<Ticket>(() => existing ? { ...existing } : blankForm())
   const [editMode, setEdit] = useState(ticketMode === 'create')
@@ -58,6 +100,22 @@ export function TicketModal() {
       setEdit(ticketMode === 'edit')
     }
   }, [activeTicketId, ticketMode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Live conflict preview untuk draft yang sedang diedit ────────────────────
+  const projectTickets = useMemo(
+    () => allTickets.filter(t => t.projectId === selectedProjectId),
+    [allTickets, selectedProjectId]
+  )
+  const draft = useMemo(
+    () => (editMode && isOpen ? withDerivedEndDate(form, topEnvId) : null),
+    [editMode, isOpen, form, topEnvId]
+  )
+  const draftConflicts = useDraftConflicts(projectTickets, draft)
+  const suggestion = useMemo(() => {
+    if (!draft || draftConflicts.length === 0) return null
+    return findNearestFreeDate(projectTickets.filter(t => t.id !== draft.id), draft)
+  }, [draft, draftConflicts, projectTickets])
+  const { data: resolutions = [] } = useConflictResolutions()
 
   if (!isOpen || !project) return null
 
@@ -75,14 +133,29 @@ export function TicketModal() {
     }))
   }
 
+  const handleClose = () => {
+    resetSave()
+    closeTicket()
+  }
+
   const handleSave = () => {
     if (!form.title.trim()) return
-    saveTicket(withDerivedEndDate(form), { onSuccess: closeTicket })
+    saveTicket(withDerivedEndDate(form, topEnvId), { onSuccess: handleClose })
+  }
+
+  const applySuggestion = () => {
+    if (!suggestion) return
+    setForm(f => ({
+      ...f,
+      startDate: suggestion,
+      // pertahankan durasi jika endDate diisi manual
+      endDate: f.endDate ? addDays(suggestion, daysBetween(f.startDate, f.endDate)) : f.endDate,
+    }))
   }
 
   const handleDelete = () => {
     if (!existing) return
-    deleteTicket(existing.id, { onSuccess: closeTicket })
+    deleteTicket(existing.id, { onSuccess: handleClose })
   }
 
   const modulesByCategory = project.modules.reduce<Record<string, typeof project.modules>>((acc, m) => {
@@ -93,7 +166,7 @@ export function TicketModal() {
 
   return (
     <div
-      onClick={closeTicket}
+      onClick={handleClose}
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.72)',
         zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -133,7 +206,7 @@ export function TicketModal() {
               </Badge>
             )}
             {!editMode && <Btn variant="default" size="sm" onClick={() => setEdit(true)}>Edit</Btn>}
-            <button onClick={closeTicket} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMut, fontSize: 18, padding: '0 2px', lineHeight: 1 }}>×</button>
+            <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMut, fontSize: 18, padding: '0 2px', lineHeight: 1 }}>×</button>
           </div>
         </div>
 
@@ -178,7 +251,33 @@ export function TicketModal() {
             </Field>
           </div>
 
-          {/* Row 2: dates / assignee */}
+          {/* Row 2: ticket type / SOW / JIRA */}
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Field label="Ticket Type" style={{ flex: 1 }}>
+              {editMode
+                ? <Sel value={form.ticketType} onChange={v => set('ticketType', v as TicketType)}>
+                    {TICKET_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </Sel>
+                : <span style={{ fontSize: 12, color: C.text, display: 'block', padding: '4px 0' }}>
+                    {TICKET_TYPES.find(t => t.value === form.ticketType)?.label ?? form.ticketType}
+                  </span>
+              }
+            </Field>
+            <Field label="SOW Link" style={{ flex: 1.5 }}>
+              {editMode
+                ? <Input value={form.sowLink} onChange={v => set('sowLink', v)} placeholder="https://…" />
+                : <LinkValue url={form.sowLink} />
+              }
+            </Field>
+            <Field label="JIRA Ticket" style={{ flex: 1.5 }}>
+              {editMode
+                ? <Input value={form.jiraLink} onChange={v => set('jiraLink', v)} placeholder="https://…" />
+                : <LinkValue url={form.jiraLink} />
+              }
+            </Field>
+          </div>
+
+          {/* Row 3: dates / assignee */}
           <div style={{ display: 'flex', gap: 10 }}>
             <Field label="Start Date" style={{ flex: 1 }}>
               {editMode
@@ -238,14 +337,61 @@ export function TicketModal() {
             )}
           </Field>
 
+          {/* Conflict preview — live saat mengisi form, sebelum disimpan */}
+          {editMode && draftConflicts.length > 0 && (
+            <Field label="⚠ Konflik Terdeteksi (belum disimpan)">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                {draftConflicts.map(c => {
+                  const otherId = c.ticket1Id === form.id ? c.ticket2Id : c.ticket1Id
+                  const other   = allTickets.find(t => t.id === otherId)
+                  const mNames  = c.modules.map(id => project.modules.find(m => m.id === id)?.name).filter(Boolean)
+                  const res     = findResolution(resolutions, c)
+                  return (
+                    <div
+                      key={c.id}
+                      style={{
+                        padding: '8px 10px', borderRadius: 5,
+                        background: c.type === 'hard' ? 'rgba(239,68,68,0.07)' : 'rgba(234,179,8,0.05)',
+                        border: `1px solid ${c.type === 'hard' ? 'rgba(239,68,68,0.22)' : 'rgba(234,179,8,0.18)'}`,
+                        display: 'flex', flexDirection: 'column', gap: 3,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Badge type={c.type === 'hard' ? 'hard' : 'soft'} size="xs">{c.type === 'hard' ? 'Hard' : 'Soft'}</Badge>
+                        <span style={{ fontSize: 11, fontWeight: 500, color: C.text }}>vs {other?.title}</span>
+                        {res && <span style={{ fontSize: 9, color: C.green, fontWeight: 600 }}>✓ sudah didiskusikan</span>}
+                      </div>
+                      <span style={{ fontSize: 10, color: C.textMut }}>
+                        Shared: {mNames.join(', ')} · {formatDate(c.overlapStart)}–{formatDate(c.overlapEnd)}
+                      </span>
+                    </div>
+                  )
+                })}
+                {suggestion && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '7px 10px', borderRadius: 5,
+                    background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.25)',
+                  }}>
+                    <span style={{ fontSize: 11, color: C.textSec, flex: 1 }}>
+                      Slot bebas konflik terdekat: <b style={{ color: C.green }}>{formatDateFull(suggestion)}</b>
+                    </span>
+                    <Btn variant="default" size="xs" onClick={applySuggestion}>Pakai tanggal ini</Btn>
+                  </div>
+                )}
+              </div>
+            </Field>
+          )}
+
           {/* Active Conflicts */}
-          {tc.length > 0 && (
+          {!editMode && tc.length > 0 && (
             <Field label="Active Conflicts">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                 {tc.map(c => {
                   const otherId = c.ticket1Id === activeTicketId ? c.ticket2Id : c.ticket1Id
                   const other   = allTickets.find(t => t.id === otherId)
                   const mNames  = c.modules.map(id => project.modules.find(m => m.id === id)?.name).filter(Boolean)
+                  const res     = findResolution(resolutions, c)
                   return (
                     <div
                       key={c.id}
@@ -264,6 +410,10 @@ export function TicketModal() {
                       <span style={{ fontSize: 10, color: C.textMut }}>
                         Shared: {mNames.join(', ')} · {formatDate(c.overlapStart)}–{formatDate(c.overlapEnd)}
                       </span>
+                      {/* Editor kesepakatan — stopPropagation agar tidak membuka tiket lawan */}
+                      <div onClick={e => e.stopPropagation()} style={{ marginTop: 3 }}>
+                        <ResolutionEditor conflict={c} resolution={res} />
+                      </div>
                     </div>
                   )
                 })}
@@ -274,18 +424,36 @@ export function TicketModal() {
 
         {/* Footer */}
         {editMode && (
-          <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: 7, flexShrink: 0 }}>
-            {existing && (
-              <Btn variant="danger" size="sm" onClick={handleDelete}>Delete</Btn>
+          <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+            {saveError && (
+              <div style={{
+                padding: '9px 12px', borderRadius: 6,
+                background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.3)',
+                fontSize: 11, color: '#ef4444', lineHeight: 1.5,
+              }}>
+                Failed to save: {(saveError as Error).message}
+              </div>
             )}
-            <div style={{ flex: 1 }} />
-            <Btn variant="default" size="sm" onClick={() => {
-              if (ticketMode === 'create') closeTicket()
-              else setEdit(false)
-            }}>Cancel</Btn>
-            <Btn variant="primary" size="sm" onClick={handleSave}>
-              {ticketMode === 'create' ? 'Create Ticket' : 'Save Changes'}
-            </Btn>
+            <div style={{ display: 'flex', gap: 7 }}>
+              {existing && (
+                <Btn variant="danger" size="sm" onClick={handleDelete}>Delete</Btn>
+              )}
+              <div style={{ flex: 1 }} />
+              {!form.title.trim() && (
+                <span style={{ fontSize: 10, color: C.textMut, alignSelf: 'center' }}>Title is required</span>
+              )}
+              <Btn variant="default" size="sm" onClick={() => {
+                if (ticketMode === 'create') handleClose()
+                else {
+                  if (existing) setForm({ ...existing })  // discard unsaved edits
+                  resetSave()
+                  setEdit(false)
+                }
+              }}>Cancel</Btn>
+              <Btn variant="primary" size="sm" onClick={handleSave} disabled={saving || !form.title.trim()}>
+                {saving ? 'Saving…' : ticketMode === 'create' ? 'Create Ticket' : 'Save Changes'}
+              </Btn>
+            </div>
           </div>
         )}
       </div>

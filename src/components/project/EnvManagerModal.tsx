@@ -59,7 +59,10 @@ export function EnvManagerModal() {
   const remove = (id: string) => setEnvs(prev => prev.filter(e => e.id !== id))
 
   const save = () => {
-    updateProject({ ...project, environments: envs }, { onSuccess: closeEnvManager })
+    // Reindex order: removals leave gaps and additions reuse prev.length,
+    // which can produce duplicate order values (order drives top-env detection)
+    const reindexed = envs.map((e, i) => ({ ...e, order: i }))
+    updateProject({ ...project, environments: reindexed }, { onSuccess: closeEnvManager })
   }
 
   return (

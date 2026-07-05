@@ -1,6 +1,5 @@
 import { supabase } from './supabase'
-import { withDerivedEndDate } from './utils'
-import type { Project, Ticket, Environment, Module } from '../types'
+import type { Project, Ticket, Environment, Module, ConflictResolution } from '../types'
 
 // ── Raw DB row types ──────────────────────────────────────────────────────────
 
@@ -24,6 +23,9 @@ interface DbTicket {
   status: string
   assignee: string | null
   priority: string
+  ticket_type: string
+  sow_link: string | null
+  jira_link: string | null
   deployment_entries: { id: string; environment_id: string; date: string }[]
   ticket_modules: { module_id: string }[]
 }
@@ -43,8 +45,12 @@ function toProject(raw: DbProject): Project {
   }
 }
 
+// end_date in DB is already the derived value (written via withDerivedEndDate at
+// save time, using the project's top env). Do NOT re-derive here — this function
+// has no access to env ordering, so the fallback rule would silently disagree
+// with what was saved.
 function toTicket(raw: DbTicket): Ticket {
-  const base: Ticket = {
+  return {
     id: raw.id,
     projectId: raw.project_id,
     title: raw.title,
@@ -55,6 +61,9 @@ function toTicket(raw: DbTicket): Ticket {
     status: raw.status as Ticket['status'],
     assignee: raw.assignee ?? '',
     priority: raw.priority as Ticket['priority'],
+    ticketType: raw.ticket_type as Ticket['ticketType'],
+    sowLink: raw.sow_link ?? '',
+    jiraLink: raw.jira_link ?? '',
     modules: raw.ticket_modules.map(tm => tm.module_id),
     deployments: raw.deployment_entries.map(de => ({
       id: de.id,
@@ -62,7 +71,6 @@ function toTicket(raw: DbTicket): Ticket {
       date: de.date,
     })),
   }
-  return withDerivedEndDate(base)
 }
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -180,6 +188,7 @@ export async function fetchAllTickets(): Promise<Ticket[]> {
     .select(`
       id, project_id, title, description, start_date, end_date,
       environment_id, status, assignee, priority,
+      ticket_type, sow_link, jira_link,
       deployment_entries(id, environment_id, date),
       ticket_modules(module_id)
     `)
@@ -202,13 +211,17 @@ export async function upsertTicket(ticket: Ticket, userId: string): Promise<void
     status: ticket.status,
     assignee: ticket.assignee || null,
     priority: ticket.priority,
+    ticket_type: ticket.ticketType,
+    sow_link: ticket.sowLink || null,
+    jira_link: ticket.jiraLink || null,
     created_by: userId,
     updated_at: new Date().toISOString(),
   })
   if (ticketErr) throw ticketErr
 
   // Sync ticket_modules (delete all → insert)
-  await supabase.from('ticket_modules').delete().eq('ticket_id', ticket.id)
+  const { error: delModErr } = await supabase.from('ticket_modules').delete().eq('ticket_id', ticket.id)
+  if (delModErr) throw delModErr
   if (ticket.modules.length > 0) {
     const { error } = await supabase.from('ticket_modules').insert(
       ticket.modules.map(mid => ({ ticket_id: ticket.id, module_id: mid }))
@@ -217,7 +230,8 @@ export async function upsertTicket(ticket: Ticket, userId: string): Promise<void
   }
 
   // Sync deployment_entries (delete all → insert with stable IDs)
-  await supabase.from('deployment_entries').delete().eq('ticket_id', ticket.id)
+  const { error: delDepErr } = await supabase.from('deployment_entries').delete().eq('ticket_id', ticket.id)
+  if (delDepErr) throw delDepErr
   if (ticket.deployments.length > 0) {
     const { error } = await supabase.from('deployment_entries').insert(
       ticket.deployments.map(d => ({
@@ -234,5 +248,64 @@ export async function upsertTicket(ticket: Ticket, userId: string): Promise<void
 export async function deleteTicketById(id: string): Promise<void> {
   if (!supabase) throw new Error('Supabase not configured')
   const { error } = await supabase.from('tickets').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ── Conflict resolutions ─────────────────────────────────────────────────────
+
+interface DbConflictResolution {
+  id: string
+  project_id: string
+  ticket_a: string
+  ticket_b: string
+  link: string | null
+  note: string | null
+  created_at: string
+}
+
+export async function fetchConflictResolutions(): Promise<ConflictResolution[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('conflict_resolutions')
+    .select('id, project_id, ticket_a, ticket_b, link, note, created_at')
+  if (error) throw error
+  return (data as DbConflictResolution[]).map(r => ({
+    id: r.id,
+    projectId: r.project_id,
+    ticketA: r.ticket_a,
+    ticketB: r.ticket_b,
+    link: r.link ?? '',
+    note: r.note ?? '',
+    createdAt: r.created_at.slice(0, 10),
+  }))
+}
+
+export async function upsertConflictResolution(input: {
+  projectId: string
+  ticketA: string   // must already be sorted: ticketA < ticketB
+  ticketB: string
+  link: string
+  note: string
+  userId: string
+}): Promise<void> {
+  if (!supabase) throw new Error('Supabase not configured')
+  const { error } = await supabase.from('conflict_resolutions').upsert(
+    {
+      project_id: input.projectId,
+      ticket_a: input.ticketA,
+      ticket_b: input.ticketB,
+      link: input.link || null,
+      note: input.note || null,
+      created_by: input.userId,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'ticket_a,ticket_b' }
+  )
+  if (error) throw error
+}
+
+export async function deleteConflictResolution(id: string): Promise<void> {
+  if (!supabase) throw new Error('Supabase not configured')
+  const { error } = await supabase.from('conflict_resolutions').delete().eq('id', id)
   if (error) throw error
 }

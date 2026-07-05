@@ -5,10 +5,11 @@ import { C } from '../ui/tokens'
 import { Badge } from '../ui/Badge'
 import { Btn } from '../ui/Btn'
 import { useAppStore } from '../../stores/appStore'
-import { useConflicts } from '../../hooks/useConflicts'
+import { useConflicts, useConflictZones } from '../../hooks/useConflicts'
+import type { ConflictZone } from '../../lib/conflict'
 import { useTickets, useSaveTicket } from '../../hooks/useTickets'
 import { useProjects } from '../../hooks/useProjects'
-import { daysBetween, addDays, offset, TODAY_STR, formatDate, generateId, withDerivedEndDate } from '../../lib/utils'
+import { daysBetween, addDays, offset, TODAY_STR, formatDate, generateId, withDerivedEndDate, parseDate } from '../../lib/utils'
 import type { Ticket, ConflictPair } from '../../types'
 
 const LEFT_W     = 148
@@ -20,9 +21,8 @@ const TOTAL_DAYS = 35
 function buildDates(startStr: string, count: number) {
   const out: { str: string; d: Date }[] = []
   for (let i = 0; i < count; i++) {
-    const d = new Date(startStr)
-    d.setDate(d.getDate() + i)
-    out.push({ str: format(d, 'yyyy-MM-dd'), d })
+    const str = addDays(startStr, i)
+    out.push({ str, d: parseDate(str) })
   }
   return out
 }
@@ -69,30 +69,44 @@ function DeploymentConnectors({
     const result: { key: string; x1: number; y1: number; x2: number; y2: number; color: string; isPlanned: boolean }[] = []
 
     for (const ticket of tickets) {
-      if (ticket.deployments.length < 2) continue
+      if (ticket.deployments.length === 0) continue
 
-      const sorted = [...ticket.deployments].sort((a, b) => a.date.localeCompare(b.date))
-      for (let i = 0; i < sorted.length - 1; i++) {
-        const from = sorted[i]
-        const to   = sorted[i + 1]
-        const idx1 = sortedEnvColors.findIndex(e => e.id === from.environmentId)
-        const idx2 = sortedEnvColors.findIndex(e => e.id === to.environmentId)
-        if (idx1 === -1 || idx2 === -1) continue
+      // Satu titik per env: deployment terbaru di env itu; env rumah tanpa
+      // deployment dapat titik "planned" di startDate
+      const pointByEnv = new Map<string, { date: string; isPlanned: boolean }>()
+      for (const d of ticket.deployments) {
+        const cur = pointByEnv.get(d.environmentId)
+        if (!cur || d.date > cur.date) pointByEnv.set(d.environmentId, { date: d.date, isPlanned: false })
+      }
+      if (!pointByEnv.has(ticket.environmentId)) {
+        pointByEnv.set(ticket.environmentId, { date: ticket.startDate, isPlanned: true })
+      }
 
-        const xOff1 = daysBetween(viewStart, from.date)
-        const xOff2 = daysBetween(viewStart, to.date)
-        if (xOff2 < 0 || xOff1 >= TOTAL_DAYS) continue
+      // Urutan garis mengikuti TANGGA ENV (paling bawah → paling atas, sesuai
+      // env.order), BUKAN urutan tanggal — alur promosi selalu env → env di
+      // atasnya, tanggal hanya menentukan posisi horizontal.
+      // sortedEnvColors terurut top-first, jadi index terbesar = env terbawah.
+      const ladder = sortedEnvColors
+        .map((e, idx) => ({ envId: e.id, idx, color: e.color, point: pointByEnv.get(e.id) }))
+        .filter(x => x.point)
+        .sort((a, b) => b.idx - a.idx)   // bawah → atas
 
-        const x1 = xOff1 * dw + dw / 2
-        const x2 = xOff2 * dw + dw / 2
-        const y1 = idx1 * ROW_H + ROW_H / 2
-        const y2 = idx2 * ROW_H + ROW_H / 2
+      for (let i = 0; i < ladder.length - 1; i++) {
+        const from = ladder[i]
+        const to   = ladder[i + 1]
+
+        const xOff1 = daysBetween(viewStart, from.point!.date)
+        const xOff2 = daysBetween(viewStart, to.point!.date)
+        if (Math.max(xOff1, xOff2) < 0 || Math.min(xOff1, xOff2) >= TOTAL_DAYS) continue
 
         result.push({
           key: `${ticket.id}-${i}`,
-          x1, y1, x2, y2,
-          color: sortedEnvColors[idx2]?.color ?? C.accent,
-          isPlanned: false,
+          x1: xOff1 * dw + dw / 2,
+          y1: from.idx * ROW_H + ROW_H / 2,
+          x2: xOff2 * dw + dw / 2,
+          y2: to.idx * ROW_H + ROW_H / 2,
+          color: to.color ?? C.accent,
+          isPlanned: from.point!.isPlanned || to.point!.isPlanned,
         })
       }
     }
@@ -132,8 +146,9 @@ interface MarkerBoxProps {
   conflicts: ConflictPair[]
   moduleNames: Record<string, string>
   allTickets: Ticket[]                  // for resolving "conflicts with" names
-  sortedEnvCount: number
-  scrollContainerRef: React.RefObject<HTMLDivElement | null>
+  sortedEnvIds: string[]
+  rowsContainerRef: React.RefObject<HTMLDivElement | null>   // container rows — origin perhitungan drag
+  dragEndRef: React.MutableRefObject<boolean>                // suppress row-click setelah drag
   onSaveTicket: (ticket: Ticket) => void
   onMoveTicket: (id: string, startDate: string, endDate: string, envId?: string) => void
   onRemoveDeployment: (ticketId: string, environmentId: string, date: string) => void
@@ -141,19 +156,27 @@ interface MarkerBoxProps {
 
 function MarkerBox({
   group, envIdx, viewStart, dw, onOpen, conflicts, moduleNames, allTickets,
-  sortedEnvCount, scrollContainerRef, onSaveTicket, onMoveTicket, onRemoveDeployment,
+  sortedEnvIds, rowsContainerRef, dragEndRef, onSaveTicket, onMoveTicket, onRemoveDeployment,
 }: MarkerBoxProps) {
   const [open, setOpen]         = useState(false)
   const [popupStyle, setPopup]  = useState<React.CSSProperties>({})
   const [drag, setDrag]         = useState<{
     startX: number; startY: number
     dayDelta: number; targetEnvIdx: number
+    ticket: Ticket                       // tiket spesifik yang sedang ditarik
+  } | null>(null)
+  // Mousedown di baris popup: belum tentu drag — jadi drag begitu bergerak >5px,
+  // kalau dilepas tanpa gerak dianggap klik (buka detail tiket)
+  const [pendingDrag, setPendingDrag] = useState<{
+    startX: number; startY: number; ticket: Ticket
   } | null>(null)
 
   const ref = useRef<HTMLDivElement>(null)
+  // Set when a mouseup actually moved the marker, so the click event that the
+  // browser fires right after the drag doesn't also open the ticket modal
+  const didDragRef = useRef(false)
 
   const xOff = daysBetween(viewStart, group.date)
-  if (xOff < 0 || xOff >= TOTAL_DAYS) return null
 
   const width      = Math.max(dw - 4, 10)
   const barH       = ROW_H - 22
@@ -167,22 +190,49 @@ function MarkerBox({
 
   const hasHard   = group.tickets.some(t => conflicts.some(c => (c.ticket1Id === t.id || c.ticket2Id === t.id) && c.type === 'hard'))
   const hasSoft   = !hasHard && group.tickets.some(t => conflicts.some(c => c.ticket1Id === t.id || c.ticket2Id === t.id))
-  const accentColor = hasHard ? '#ef4444' : hasSoft ? '#eab308' : group.envColor
-  const bgColor     = hasHard ? 'rgba(239,68,68,0.18)' : hasSoft ? 'rgba(234,179,8,0.14)' : `${group.envColor}22`
+  // Marker always keeps its environment color — conflicts are indicated by the
+  // red/yellow ConflictZoneOverlay on the overlapping dates, not by recoloring
+  const accentColor = group.envColor
+  const bgColor     = `${group.envColor}22`
 
   // ── Drag logic ──────────────────────────────────────────────────────────────
+  // Row target diukur langsung dari kontainer rows — tanpa asumsi tinggi
+  // header/toolbar (HDR_H offset lama membuat drag horizontal di row bawah
+  // salah terdeteksi sebagai pindah env)
   const computeEnvIdx = (mouseY: number) => {
-    const rect = scrollContainerRef.current?.getBoundingClientRect()
+    const rect = rowsContainerRef.current?.getBoundingClientRect()
     if (!rect) return envIdx
-    const relY = mouseY - rect.top - HDR_H
-    return Math.max(0, Math.min(sortedEnvCount - 1, Math.floor(relY / ROW_H)))
+    return Math.max(0, Math.min(sortedEnvIds.length - 1, Math.floor((mouseY - rect.top) / ROW_H)))
+  }
+
+  const startDrag = (e: React.MouseEvent, ticket: Ticket) => {
+    if (e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    setDrag({ startX: e.clientX, startY: e.clientY, dayDelta: 0, targetEnvIdx: envIdx, ticket })
   }
 
   const onMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0 || !solo) return
-    e.preventDefault(); e.stopPropagation()
-    setDrag({ startX: e.clientX, startY: e.clientY, dayDelta: 0, targetEnvIdx: envIdx })
+    if (!solo || !soloTicket) return
+    startDrag(e, soloTicket)
   }
+
+  useEffect(() => {
+    if (!pendingDrag) return
+    const onMM = (e: MouseEvent) => {
+      if (Math.abs(e.clientX - pendingDrag.startX) > 5 || Math.abs(e.clientY - pendingDrag.startY) > 5) {
+        setOpen(false)
+        setDrag({
+          startX: pendingDrag.startX, startY: pendingDrag.startY,
+          dayDelta: 0, targetEnvIdx: envIdx, ticket: pendingDrag.ticket,
+        })
+        setPendingDrag(null)
+      }
+    }
+    const onMU = () => setPendingDrag(null)
+    document.addEventListener('mousemove', onMM)
+    document.addEventListener('mouseup', onMU)
+    return () => { document.removeEventListener('mousemove', onMM); document.removeEventListener('mouseup', onMU) }
+  }, [pendingDrag, envIdx])
 
   useEffect(() => {
     if (!drag) return
@@ -192,38 +242,61 @@ function MarkerBox({
       setDrag(prev => prev ? { ...prev, dayDelta: dd, targetEnvIdx: tIdx } : null)
     }
     const onMU = (e: MouseEvent) => {
-      const dd      = Math.round((e.clientX - drag.startX) / dw)
-      const tIdx    = computeEnvIdx(e.clientY)
-      const newDate = addDays(group.date, dd)
-      if (soloTicket) {
-        if (soloTicket.deployments.length === 0) {
-          // Planned marker → update startDate + possibly env
-          const newEnvId = tIdx !== envIdx ? group.environmentId : undefined
-          onMoveTicket(soloTicket.id, newDate, soloTicket.endDate ?? newDate, newEnvId)
-        } else {
-          // Actual deployment entry → update that specific entry
-          const updated: Ticket = {
-            ...soloTicket,
-            deployments: soloTicket.deployments.map(d =>
-              d.environmentId === group.environmentId && d.date === group.date
-                ? { ...d, date: newDate, environmentId: group.environmentId }
-                : d
-            ),
-          }
-          onSaveTicket(updated)
+      const dd           = Math.round((e.clientX - drag.startX) / dw)
+      const tIdx         = computeEnvIdx(e.clientY)
+      const newDate      = addDays(group.date, dd)
+      const targetEnvId  = sortedEnvIds[tIdx] ?? group.environmentId
+      const t            = drag.ticket
+
+      // No movement → plain click, let handleClick take over (and skip the save)
+      if (dd === 0 && tIdx === envIdx) {
+        setDrag(null)
+        return
+      }
+      didDragRef.current = true
+      dragEndRef.current = true   // suppress click pada env row setelah drag
+
+      if (group.isPlanned) {
+        // Marker planned (env rumah, belum ada deployment DI SINI) → geser startDate.
+        // Catatan: jangan cek t.deployments.length — tiket bisa saja sudah punya
+        // deployment di env LAIN sementara marker ini tetap planned; branch
+        // "update deployment" di bawah tidak akan menemukan entry yang cocok
+        // dan drag horizontal jadi no-op.
+        const newEnvId = tIdx !== envIdx ? targetEnvId : undefined
+        onMoveTicket(t.id, newDate, t.endDate ?? newDate, newEnvId)
+      } else if (targetEnvId === group.environmentId) {
+        // Same env: update this deployment's date
+        const updated: Ticket = {
+          ...t,
+          deployments: t.deployments.map(d =>
+            d.environmentId === group.environmentId && d.date === group.date
+              ? { ...d, date: newDate }
+              : d
+          ),
         }
+        onSaveTicket(updated)
+      } else {
+        // Different env: add or update deployment in target env
+        const existingInTarget = t.deployments.find(d => d.environmentId === targetEnvId)
+        const newDeployments = existingInTarget
+          ? t.deployments.map(d =>
+              d.environmentId === targetEnvId ? { ...d, date: newDate } : d
+            )
+          : [...t.deployments, { id: generateId(), environmentId: targetEnvId, date: newDate }]
+        onSaveTicket({ ...t, deployments: newDeployments })
       }
       setDrag(null)
     }
     document.addEventListener('mousemove', onMM)
     document.addEventListener('mouseup', onMU)
     return () => { document.removeEventListener('mousemove', onMM); document.removeEventListener('mouseup', onMU) }
-  }, [drag, dw, envIdx, soloTicket, group]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [drag, dw, envIdx, group]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Click logic ─────────────────────────────────────────────────────────────
   const handleClick = (e: React.MouseEvent) => {
-    if (drag) return
     e.stopPropagation()
+    if (didDragRef.current) { didDragRef.current = false; return }
+    if (drag) return
     if (solo && soloTicket) { onOpen(soloTicket.id); return }
     if (!open && ref.current) {
       const rect = ref.current.getBoundingClientRect()
@@ -237,6 +310,12 @@ function MarkerBox({
 
   const isDragging      = drag !== null
   const movedToOtherEnv = isDragging && drag.targetEnvIdx !== envIdx
+
+  // Out of the visible date window. This check MUST come after every hook —
+  // an early return before useEffect changes the hook count between renders
+  // and crashes React ("Rendered fewer hooks than expected") when Prev/Next
+  // scrolls a previously visible marker out of range.
+  if (xOff < 0 || xOff >= TOTAL_DAYS) return null
 
   return (
     <div
@@ -281,14 +360,14 @@ function MarkerBox({
 
         {/* Icon */}
         <span style={{ fontSize: 10, lineHeight: 1, flexShrink: 0 }}>
-          {hasHard ? '⚡' : hasSoft ? '◎' : group.isPlanned ? '◌' : '●'}
+          {group.isPlanned ? '◌' : '●'}
         </span>
 
         {/* Single ticket: show name */}
         {solo && soloTicket && (
           <span style={{
             fontSize: 9, fontWeight: 500,
-            color: hasHard ? '#ef4444' : hasSoft ? '#eab308' : C.textSec,
+            color: C.textSec,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             width: '100%', padding: '0 4px', boxSizing: 'border-box',
             textAlign: 'center', lineHeight: 1.4,
@@ -317,8 +396,19 @@ function MarkerBox({
           >×</button>
         )}
 
+        {/* Saat drag dari popup: tampilkan tiket yang sedang ditarik */}
+        {multiple && isDragging && drag && (
+          <span style={{
+            fontSize: 9, fontWeight: 600, color: C.textSec,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            width: '100%', padding: '0 4px', boxSizing: 'border-box', textAlign: 'center',
+          }}>
+            {drag.ticket.title}
+          </span>
+        )}
+
         {/* Multiple tickets: stack icon */}
-        {multiple && (
+        {multiple && !isDragging && (
           <>
             <div style={{ position: 'relative', width: 14, height: 10, flexShrink: 0 }}>
               <div style={{ position: 'absolute', left: 2, top: 2, width: 10, height: 8, borderRadius: 2, border: `1px solid ${accentColor}60`, background: `${accentColor}15` }} />
@@ -350,7 +440,7 @@ function MarkerBox({
       {open && createPortal(
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={e => { e.stopPropagation(); setOpen(false) }} />
-          <div style={{ ...popupStyle, zIndex: 9999, background: C.surface, border: `1px solid ${C.borderEl}`, borderRadius: 8, boxShadow: '0 12px 48px rgba(0,0,0,0.7)', overflow: 'hidden' }}>
+          <div style={{ ...popupStyle, zIndex: 9999, background: C.surface, border: `1px solid ${C.borderEl}`, borderRadius: 8, boxShadow: '0 12px 48px rgba(0,0,0,0.7)', overflow: 'hidden', userSelect: 'none' }}>
             <div style={{ padding: '8px 10px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 6 }}>
               <div style={{ width: 7, height: 7, borderRadius: '50%', background: group.envColor }} />
               <span style={{ fontSize: 11, fontWeight: 700, color: C.text }}>{formatDate(group.date)}</span>
@@ -368,13 +458,22 @@ function MarkerBox({
                 <div key={t.id}
                   style={{ borderBottom: `1px solid ${C.border}40`, display: 'flex', flexDirection: 'column' }}
                 >
-                  {/* Ticket title row */}
+                  {/* Ticket title row — klik = buka detail, tekan+geser = drag tiket ini */}
                   <div
                     onClick={e => { e.stopPropagation(); setOpen(false); onOpen(t.id) }}
-                    style={{ padding: '9px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5 }}
+                    onMouseDown={e => {
+                      if (e.button !== 0) return
+                      e.preventDefault()   // cegah text selection saat mulai drag
+                      e.stopPropagation()
+                      setPendingDrag({ startX: e.clientX, startY: e.clientY, ticket: t })
+                    }}
+                    title="Klik untuk detail · tekan lalu geser untuk pindah tanggal/env"
+                    style={{ padding: '10px 10px', cursor: 'grab', display: 'flex', alignItems: 'center', gap: 6, userSelect: 'none' }}
                     onMouseEnter={e => (e.currentTarget.style.background = '#1a1a1d')}
                     onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                   >
+                    {/* Indikator draggable */}
+                    <span style={{ color: C.textMut, fontSize: 12, lineHeight: 1, flexShrink: 0, pointerEvents: 'none' }}>⠿</span>
                     {tHard && <span style={{ fontSize: 10 }}>⚡</span>}
                     {tSoft && !tHard && <span style={{ fontSize: 10 }}>◎</span>}
                     <span style={{ fontSize: 12, fontWeight: 600, color: tHard ? '#ef4444' : tSoft ? '#eab308' : C.text, flex: 1 }}>{t.title}</span>
@@ -422,12 +521,12 @@ function MarkerBox({
   )
 }
 
-// ── Conflict zone background ──────────────────────────────────────────────────
-function ConflictZoneOverlay({ conflict, viewStart, dw }: { conflict: ConflictPair; viewStart: string; dw: number }) {
-  const s = daysBetween(viewStart, conflict.overlapStart)
-  const e = daysBetween(viewStart, conflict.overlapEnd) + 1
+// ── Conflict zone background (per environment, per jendela overlap) ───────────
+function ConflictZoneOverlay({ zone, viewStart, dw }: { zone: ConflictZone; viewStart: string; dw: number }) {
+  const s = daysBetween(viewStart, zone.startDate)
+  const e = daysBetween(viewStart, zone.endDate) + 1
   if (e <= 0 || s >= TOTAL_DAYS) return null
-  const isH = conflict.type === 'hard'
+  const isH = zone.type === 'hard'
   return (
     <div style={{
       position: 'absolute', left: s * dw, top: 0, bottom: 0, width: (e - s) * dw,
@@ -446,21 +545,37 @@ export function TimelineView() {
   const { data: projects = [] }   = useProjects()
   const { mutate: saveTicket }    = useSaveTicket()
   const allConflicts = useConflicts(allTickets)
+  const allZones     = useConflictZones(allTickets)
+
+  // Computed early so callbacks below can reference them
+  const project    = projects.find(p => p.id === selectedProjectId)
+  const sortedEnvs = project ? [...project.environments].sort((a, b) => a.order - b.order) : []
+  const topEnvId   = sortedEnvs[0]?.id
+
+  const saveTicketWithDerived = useCallback((ticket: Ticket) => {
+    saveTicket(withDerivedEndDate(ticket, topEnvId))
+  }, [saveTicket, topEnvId])
 
   const moveTicket = useCallback((id: string, startDate: string, _endDate: string, environmentId?: string) => {
     const ticket = allTickets.find(t => t.id === id)
     if (!ticket) return
     const envChanged = environmentId && environmentId !== ticket.environmentId
-    const updated: Ticket = {
-      ...ticket,
-      startDate,
-      ...(environmentId ? { environmentId } : {}),
-      deployments: envChanged
-        ? [...ticket.deployments, { id: generateId(), environmentId: environmentId!, date: startDate }]
-        : ticket.deployments,
+    let updated: Ticket
+    if (envChanged) {
+      // Cross-env drag: add/update deployment in target env, keep home env + startDate intact
+      const existing = ticket.deployments.find(d => d.environmentId === environmentId)
+      updated = {
+        ...ticket,
+        deployments: existing
+          ? ticket.deployments.map(d => d.environmentId === environmentId ? { ...d, date: startDate } : d)
+          : [...ticket.deployments, { id: generateId(), environmentId: environmentId!, date: startDate }],
+      }
+    } else {
+      // Same-env drag: shift the planned date
+      updated = { ...ticket, startDate }
     }
-    saveTicket(withDerivedEndDate(updated))
-  }, [allTickets, saveTicket])
+    saveTicket(withDerivedEndDate(updated, topEnvId))
+  }, [allTickets, saveTicket, topEnvId])
 
   const removeDeploymentEntry = useCallback((ticketId: string, environmentId: string, date: string) => {
     const ticket = allTickets.find(t => t.id === ticketId)
@@ -468,21 +583,22 @@ export function TimelineView() {
     const sorted = [...ticket.deployments].sort((a, b) => a.date.localeCompare(b.date))
     const idx = sorted.findIndex(d => d.environmentId === environmentId && d.date === date)
     if (idx === -1) return
-    saveTicket(withDerivedEndDate({ ...ticket, deployments: sorted.slice(0, idx) }))
-  }, [allTickets, saveTicket])
+    saveTicket(withDerivedEndDate({ ...ticket, deployments: sorted.slice(0, idx) }, topEnvId))
+  }, [allTickets, saveTicket, topEnvId])
 
-  const [dw, setDw]     = useState(DEFAULT_DW)
+  const [dw, setDw]       = useState(DEFAULT_DW)
   const [vsOff, setVsOff] = useState(-10)
+  const [hdrDrag, setHdrDrag] = useState<{ startX: number; vsOff0: number } | null>(null)
 
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const scrollRef   = useRef<HTMLDivElement>(null)
+  const rowsRef     = useRef<HTMLDivElement>(null)   // origin geometri drag marker
+  const dragEndRef  = useRef(false)                  // suppress row-click sesaat setelah drag
 
   const viewStart  = useMemo(() => offset(vsOff), [vsOff])
   const dates      = useMemo(() => buildDates(viewStart, TOTAL_DAYS), [viewStart])
   const months     = useMemo(() => buildMonths(dates), [dates])
-  const project    = projects.find(p => p.id === selectedProjectId)
   const pTickets   = allTickets.filter(t => t.projectId === selectedProjectId)
   const pConf      = allConflicts.filter(c => c.projectId === selectedProjectId)
-  const sortedEnvs = project ? [...project.environments].sort((a, b) => a.order - b.order) : []
   const sortedEnvColors = sortedEnvs.map(e => ({ id: e.id, color: e.color }))
 
   const totalW    = TOTAL_DAYS * dw
@@ -502,6 +618,16 @@ export function TimelineView() {
           if (!map.has(key)) {
             const env = sortedEnvs.find(e => e.id === dep.environmentId)
             map.set(key, { key, environmentId: dep.environmentId, date: dep.date, envColor: env?.color ?? C.accent, isPlanned: false, tickets: [] })
+          }
+          map.get(key)!.tickets.push(ticket)
+        }
+        // If home env (ticket.environmentId) has no deployment yet, keep showing planned marker there
+        const hasHomeDeployment = ticket.deployments.some(d => d.environmentId === ticket.environmentId)
+        if (!hasHomeDeployment) {
+          const key = `planned::${ticket.environmentId}::${ticket.startDate}`
+          if (!map.has(key)) {
+            const env = sortedEnvs.find(e => e.id === ticket.environmentId)
+            map.set(key, { key, environmentId: ticket.environmentId, date: ticket.startDate, envColor: env?.color ?? C.accent, isPlanned: true, tickets: [] })
           }
           map.get(key)!.tickets.push(ticket)
         }
@@ -525,6 +651,21 @@ export function TimelineView() {
       scrollRef.current.scrollLeft = Math.max(0, off * dw - 200)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!hdrDrag) return
+    const onMM = (e: MouseEvent) => {
+      const days = Math.round((e.clientX - hdrDrag.startX) / dw)
+      setVsOff(hdrDrag.vsOff0 - days)
+    }
+    const onMU = () => setHdrDrag(null)
+    document.addEventListener('mousemove', onMM)
+    document.addEventListener('mouseup', onMU)
+    return () => {
+      document.removeEventListener('mousemove', onMM)
+      document.removeEventListener('mouseup', onMU)
+    }
+  }, [hdrDrag, dw])
 
   const hardC = pConf.filter(c => c.type === 'hard').length
   const softC = pConf.filter(c => c.type === 'soft').length
@@ -627,7 +768,19 @@ export function TimelineView() {
           <div style={{ width: totalW, minWidth: totalW, position: 'relative' }}>
 
             {/* Date header */}
-            <div style={{ position: 'sticky', top: 0, background: C.surface, borderBottom: `1px solid ${C.border}`, zIndex: 3 }}>
+            <div
+              onMouseDown={e => {
+                if (e.button !== 0) return
+                e.preventDefault()
+                setHdrDrag({ startX: e.clientX, vsOff0: vsOff })
+              }}
+              style={{
+                position: 'sticky', top: 0, background: C.surface,
+                borderBottom: `1px solid ${C.border}`, zIndex: 3,
+                cursor: hdrDrag ? 'grabbing' : 'grab',
+                userSelect: 'none',
+              }}
+            >
               <div style={{ display: 'flex', height: 18, borderBottom: `1px solid ${C.border}33` }}>
                 {months.map(m => (
                   <div key={m.key} style={{ width: m.count * dw, flexShrink: 0, display: 'flex', alignItems: 'center', padding: '0 8px', borderRight: `1px solid ${C.border}33` }}>
@@ -659,20 +812,18 @@ export function TimelineView() {
             </div>
 
             {/* Rows + overlay container */}
-            <div style={{ position: 'relative', height: totalH }}>
+            <div ref={rowsRef} style={{ position: 'relative', height: totalH }}>
 
               {/* Deployment progression bezier lines */}
               <DeploymentConnectors tickets={pTickets} sortedEnvColors={sortedEnvColors} viewStart={viewStart} dw={dw} />
 
               {/* Env rows (backgrounds, conflict zones, today line) */}
               {sortedEnvs.map((env, idx) => {
-                const envConflicts = pConf.filter(c => {
-                  const t1 = pTickets.find(t => t.id === c.ticket1Id)
-                  const t2 = pTickets.find(t => t.id === c.ticket2Id)
-                  const inEnv = (t: typeof pTickets[0] | undefined) =>
-                    t?.environmentId === env.id || t?.deployments.some(d => d.environmentId === env.id)
-                  return inEnv(t1) || inEnv(t2)
-                })
+                // Zona hanya digambar di env tempat overlap benar-benar terjadi;
+                // soft dirender dulu agar hard tampak di atasnya
+                const envZones = allZones
+                  .filter(z => z.projectId === selectedProjectId && z.environmentId === env.id)
+                  .sort(a => (a.type === 'soft' ? -1 : 1))
                 return (
                   <div
                     key={env.id}
@@ -682,14 +833,18 @@ export function TimelineView() {
                       borderBottom: `1px solid ${C.border}`,
                       background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.007)',
                     }}
-                    onClick={() => newTicket({ environmentId: env.id })}
+                    onClick={() => {
+                      // Klik yang terjadi tepat setelah drag marker bukan intent buat tiket baru
+                      if (dragEndRef.current) { dragEndRef.current = false; return }
+                      newTicket({ environmentId: env.id })
+                    }}
                   >
                     {dates.map(({ str, d }, i) =>
                       (d.getDay() === 0 || d.getDay() === 6)
                         ? <div key={str} style={{ position: 'absolute', left: i * dw, top: 0, bottom: 0, width: dw, background: '#0d0d10', pointerEvents: 'none' }} />
                         : null
                     )}
-                    {envConflicts.map(c => <ConflictZoneOverlay key={c.id} conflict={c} viewStart={viewStart} dw={dw} />)}
+                    {envZones.map(z => <ConflictZoneOverlay key={z.id} zone={z} viewStart={viewStart} dw={dw} />)}
                     {todayLeft >= 0 && todayLeft <= totalW && (
                       <div style={{ position: 'absolute', left: todayLeft, top: 0, bottom: 0, width: 1, background: `${C.accent}50`, pointerEvents: 'none', zIndex: 5 }} />
                     )}
@@ -712,9 +867,10 @@ export function TimelineView() {
                       onOpen={openTicket}
                       conflicts={pConf}
                       moduleNames={moduleNames}
-                      sortedEnvCount={sortedEnvs.length}
-                      scrollContainerRef={scrollRef}
-                      onSaveTicket={saveTicket}
+                      sortedEnvIds={sortedEnvs.map(e => e.id)}
+                      rowsContainerRef={rowsRef}
+                      dragEndRef={dragEndRef}
+                      onSaveTicket={saveTicketWithDerived}
                       onMoveTicket={moveTicket}
                       onRemoveDeployment={removeDeploymentEntry}
                       allTickets={pTickets}

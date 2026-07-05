@@ -1,4 +1,5 @@
-import type { Ticket, ConflictPair } from '../types'
+import type { Ticket, ConflictPair, ConflictResolution } from '../types'
+import { addDays, daysBetween, TODAY_STR } from './utils'
 
 const FAR_FUTURE = '2099-12-31'
 
@@ -57,6 +58,9 @@ export function detectConflicts(tickets: Ticket[]): ConflictPair[] {
       const tA = active[i]
       const tB = active[j]
       if (tA.projectId !== tB.projectId) continue
+      // Different architecture (backend vs mobile vs frontend-web) never conflicts,
+      // even on the same module — they deploy independently
+      if (tA.ticketType !== tB.ticketType) continue
 
       const shared = tA.modules.filter(m => tB.modules.includes(m))
       if (shared.length === 0) continue
@@ -95,6 +99,108 @@ export function detectConflicts(tickets: Ticket[]): ConflictPair[] {
   }
 
   return result
+}
+
+/**
+ * Zona konflik per-environment untuk digambar di timeline.
+ * Berbeda dengan ConflictPair (satu ringkasan per pasangan tiket), zones
+ * memuat SEMUA jendela overlap, ditempatkan di environment tempat overlap
+ * itu benar-benar terjadi:
+ * - hard (env sama)  → satu zona di env tersebut
+ * - soft (beda env)  → satu zona di masing-masing env yang terlibat
+ */
+export interface ConflictZone {
+  id: string
+  projectId: string
+  environmentId: string
+  type: 'hard' | 'soft'
+  startDate: string
+  endDate: string
+}
+
+export function getConflictZones(tickets: Ticket[]): ConflictZone[] {
+  const zones = new Map<string, ConflictZone>()
+  const active = tickets.filter(t => t.status !== 'done' && t.status !== 'cancelled')
+  const rangesMap = new Map(active.map(t => [t.id, getDeploymentRanges(t)]))
+
+  const addZone = (projectId: string, environmentId: string, type: 'hard' | 'soft', startDate: string, endDate: string) => {
+    const key = `${projectId}:${environmentId}:${type}:${startDate}:${endDate}`
+    if (!zones.has(key)) zones.set(key, { id: key, projectId, environmentId, type, startDate, endDate })
+  }
+
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const tA = active[i]
+      const tB = active[j]
+      if (tA.projectId !== tB.projectId) continue
+      if (tA.ticketType !== tB.ticketType) continue
+      if (tA.modules.filter(m => tB.modules.includes(m)).length === 0) continue
+
+      for (const rA of rangesMap.get(tA.id) ?? []) {
+        for (const rB of rangesMap.get(tB.id) ?? []) {
+          if (!(rA.startDate <= rB.endDate && rB.startDate <= rA.endDate)) continue
+
+          const overlapStart = rA.startDate > rB.startDate ? rA.startDate : rB.startDate
+          const rawEnd       = rA.endDate < rB.endDate ? rA.endDate : rB.endDate
+          const overlapEnd   = rawEnd === FAR_FUTURE ? overlapStart : rawEnd
+
+          if (rA.environmentId === rB.environmentId) {
+            addZone(tA.projectId, rA.environmentId, 'hard', overlapStart, overlapEnd)
+          } else {
+            addZone(tA.projectId, rA.environmentId, 'soft', overlapStart, overlapEnd)
+            addZone(tA.projectId, rB.environmentId, 'soft', overlapStart, overlapEnd)
+          }
+        }
+      }
+    }
+  }
+
+  return Array.from(zones.values())
+}
+
+/**
+ * Cari tanggal start terdekat yang bebas konflik untuk sebuah draft ticket.
+ * Menggeser startDate (dan endDate, durasi dipertahankan) maju/mundur per hari,
+ * maju diprioritaskan, tanggal lampau dilewati. Hanya berlaku untuk tiket yang
+ * belum punya deployment (range-nya masih ditentukan startDate).
+ * Return null jika tidak ketemu dalam maxShiftDays atau tidak applicable.
+ */
+export function findNearestFreeDate(
+  otherTickets: Ticket[],
+  draft: Ticket,
+  maxShiftDays = 90,
+): string | null {
+  if (draft.deployments.length > 0) return null
+  const duration = draft.endDate ? daysBetween(draft.startDate, draft.endDate) : null
+
+  for (let delta = 1; delta <= maxShiftDays; delta++) {
+    for (const dir of [1, -1]) {
+      const newStart = addDays(draft.startDate, delta * dir)
+      if (newStart < TODAY_STR) continue
+      const candidate: Ticket = {
+        ...draft,
+        startDate: newStart,
+        endDate: duration !== null ? addDays(newStart, duration) : null,
+      }
+      const hits = detectConflicts([...otherTickets, candidate])
+        .filter(c => c.ticket1Id === draft.id || c.ticket2Id === draft.id)
+      if (hits.length === 0) return newStart
+    }
+  }
+  return null
+}
+
+// Kunci pasangan tiket terurut — cocok dengan (ticket_a, ticket_b) di DB
+export function sortedPair(id1: string, id2: string): [string, string] {
+  return id1 < id2 ? [id1, id2] : [id2, id1]
+}
+
+export function findResolution(
+  resolutions: ConflictResolution[],
+  conflict: ConflictPair,
+): ConflictResolution | undefined {
+  const [a, b] = sortedPair(conflict.ticket1Id, conflict.ticket2Id)
+  return resolutions.find(r => r.ticketA === a && r.ticketB === b)
 }
 
 // Legacy helpers kept for hooks/components that still reference them

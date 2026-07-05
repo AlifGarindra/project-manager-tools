@@ -2,20 +2,24 @@ import { useState } from 'react'
 import { C } from '../ui/tokens'
 import { Badge } from '../ui/Badge'
 import { StatusBadge } from '../ui/StatusBadge'
+import { ResolutionEditor } from './ResolutionEditor'
 import { useAppStore } from '../../stores/appStore'
 import { useConflicts } from '../../hooks/useConflicts'
 import { useTickets } from '../../hooks/useTickets'
 import { useProjects } from '../../hooks/useProjects'
+import { useConflictResolutions } from '../../hooks/useConflictResolutions'
+import { findResolution } from '../../lib/conflict'
 import { formatDate, daysBetween } from '../../lib/utils'
-import type { ConflictPair, Ticket, Project } from '../../types'
+import type { ConflictPair, Ticket, Project, ConflictResolution } from '../../types'
 
 function ConflictItem({
-  conflict, tickets, project, onOpenTicket,
+  conflict, tickets, project, onOpenTicket, resolution,
 }: {
   conflict: ConflictPair
   tickets: Ticket[]
   project: Project
   onOpenTicket: (id: string) => void
+  resolution?: ConflictResolution
 }) {
   const [open, setOpen] = useState(false)
   const t1 = tickets.find(t => t.id === conflict.ticket1Id)
@@ -40,6 +44,11 @@ function ConflictItem({
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <Badge type={isHard ? 'hard' : 'soft'} size="xs">{isHard ? '⚡ Hard' : '◎ Soft'}</Badge>
+          {resolution && (
+            <span style={{ fontSize: 9, color: C.green, fontWeight: 600, border: `1px solid ${C.green}40`, background: `${C.green}12`, padding: '1px 5px', borderRadius: 3 }}>
+              ✓ didiskusikan
+            </span>
+          )}
           <span style={{ fontSize: 9, color: C.textMut, marginLeft: 'auto' }}>
             {formatDate(conflict.overlapStart)}–{formatDate(conflict.overlapEnd)}{' '}
             <span style={{ color: accentColor }}>({days}d)</span>
@@ -90,6 +99,9 @@ function ConflictItem({
               : `Different environments, but shared modules may cause schema or API contract mismatches.`
             }
           </p>
+
+          {/* Kesepakatan hasil diskusi */}
+          <ResolutionEditor conflict={conflict} resolution={resolution} />
         </div>
       )}
     </div>
@@ -98,8 +110,9 @@ function ConflictItem({
 
 export function ConflictPanel() {
   const { selectedProjectId, toggleConflicts, openTicket } = useAppStore()
-  const { data: allTickets = [] } = useTickets()
-  const { data: projects = [] }   = useProjects()
+  const { data: allTickets = [] }  = useTickets()
+  const { data: projects = [] }    = useProjects()
+  const { data: resolutions = [] } = useConflictResolutions()
   const allConflicts = useConflicts(allTickets)
 
   const project  = projects.find(p => p.id === selectedProjectId)
@@ -178,7 +191,7 @@ export function ConflictPanel() {
               </div>
             )}
             {hardC.map(c => (
-              <ConflictItem key={c.id} conflict={c} tickets={pTickets} project={project} onOpenTicket={id => openTicket(id)} />
+              <ConflictItem key={c.id} conflict={c} tickets={pTickets} project={project} onOpenTicket={id => openTicket(id)} resolution={findResolution(resolutions, c)} />
             ))}
             {softC.length > 0 && (
               <div style={{ fontSize: 9, fontWeight: 600, color: C.textMut, textTransform: 'uppercase', letterSpacing: '0.06em', padding: '6px 2px 2px' }}>
@@ -186,7 +199,7 @@ export function ConflictPanel() {
               </div>
             )}
             {softC.map(c => (
-              <ConflictItem key={c.id} conflict={c} tickets={pTickets} project={project} onOpenTicket={id => openTicket(id)} />
+              <ConflictItem key={c.id} conflict={c} tickets={pTickets} project={project} onOpenTicket={id => openTicket(id)} resolution={findResolution(resolutions, c)} />
             ))}
           </>
         )}
