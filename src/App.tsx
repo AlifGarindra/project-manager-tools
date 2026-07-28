@@ -104,6 +104,13 @@ export default function App() {
             >Projects</button>
             <span style={{ fontSize: 11, color: C.textMut }}>/</span>
             <span style={{ fontSize: 12, fontWeight: 500, color: C.textSec }}>{project.name}</span>
+            {project.archived && (
+              <span style={{
+                fontSize: 9, fontWeight: 600, color: C.textMut, textTransform: 'uppercase',
+                letterSpacing: '0.06em', padding: '1px 6px', borderRadius: 3,
+                background: '#1c1c1f', border: `1px solid ${C.border}`,
+              }}>Archived</span>
+            )}
             <div style={{ width: 1, height: 18, background: C.border }} />
           </>
         )}

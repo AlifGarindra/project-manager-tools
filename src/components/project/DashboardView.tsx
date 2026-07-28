@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { C } from '../ui/tokens'
 import { Badge } from '../ui/Badge'
 import { Btn } from '../ui/Btn'
@@ -7,7 +7,7 @@ import { Hr } from '../ui/FormControls'
 import { Field } from '../ui/FormControls'
 import { useAppStore } from '../../stores/appStore'
 import { useConflicts } from '../../hooks/useConflicts'
-import { useProjects, useCreateProject } from '../../hooks/useProjects'
+import { useProjects, useCreateProject, useUpdateProject, useDeleteProject } from '../../hooks/useProjects'
 import { useTickets } from '../../hooks/useTickets'
 import { formatDate, addDays, TODAY_STR } from '../../lib/utils'
 import type { Project, Ticket, ConflictPair } from '../../types'
@@ -21,13 +21,80 @@ function StatBox({ value, label, color }: { value: number | string; label: strin
   )
 }
 
+function CardMenu({ project, onArchive, onDelete }: {
+  project: Project
+  onArchive: (p: Project) => void
+  onDelete: (p: Project) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [hov, setHov]   = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const itemStyle = {
+    display: 'block', width: '100%', padding: '6px 10px', borderRadius: 4,
+    border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left' as const,
+    fontFamily: 'Inter, sans-serif', fontSize: 11,
+  }
+
+  return (
+    <div ref={wrapRef} onClick={e => e.stopPropagation()} style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        onMouseEnter={() => setHov(true)}
+        onMouseLeave={() => setHov(false)}
+        onClick={() => setOpen(o => !o)}
+        title="Project actions"
+        style={{
+          width: 22, height: 22, borderRadius: 4,
+          background: open || hov ? C.surfaceEl : 'transparent',
+          border: `1px solid ${open || hov ? C.borderEl : 'transparent'}`,
+          color: open || hov ? C.textSec : C.textMut,
+          cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: 0,
+          fontFamily: 'Inter, sans-serif', transition: 'all 0.1s',
+        }}
+      >⋯</button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 120,
+          minWidth: 150, background: C.surface, border: `1px solid ${C.borderEl}`,
+          borderRadius: 6, padding: 4, boxShadow: '0 16px 48px rgba(0,0,0,0.6)',
+        }}>
+          <button
+            onClick={() => { setOpen(false); onArchive(project) }}
+            style={{ ...itemStyle, color: C.textSec }}
+            onMouseEnter={e => (e.currentTarget.style.background = C.surfaceEl)}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >{project.archived ? 'Unarchive' : 'Archive'}</button>
+          <button
+            onClick={() => { setOpen(false); onDelete(project) }}
+            style={{ ...itemStyle, color: C.hard }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.10)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >Delete…</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ProjectCard({
-  project, allTickets, conflicts, onSelect,
+  project, allTickets, conflicts, onSelect, onArchive, onDelete,
 }: {
   project: Project
   allTickets: Ticket[]
   conflicts: ConflictPair[]
   onSelect: (id: string) => void
+  onArchive: (p: Project) => void
+  onDelete: (p: Project) => void
 }) {
   const [hov, setHov] = useState(false)
   const tickets = allTickets.filter(t => t.projectId === project.id)
@@ -49,22 +116,31 @@ function ProjectCard({
       onMouseLeave={() => setHov(false)}
       style={{
         background: hov ? '#161618' : C.surface,
-        border: `1px solid ${hardC > 0 ? 'rgba(239,68,68,0.35)' : hov ? C.borderEl : C.border}`,
+        border: `1px solid ${hardC > 0 && !project.archived ? 'rgba(239,68,68,0.35)' : hov ? C.borderEl : C.border}`,
         borderRadius: 8, padding: '18px 20px', cursor: 'pointer',
-        transition: 'background 0.12s, border-color 0.12s', display: 'flex', flexDirection: 'column',
+        opacity: project.archived ? 0.65 : 1,
+        transition: 'background 0.12s, border-color 0.12s, opacity 0.12s', display: 'flex', flexDirection: 'column',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 3 }}>{project.name}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{project.name}</span>
+            {project.archived && (
+              <span style={{
+                fontSize: 9, fontWeight: 600, color: C.textMut, textTransform: 'uppercase',
+                letterSpacing: '0.06em', padding: '1px 6px', borderRadius: 3,
+                background: '#1c1c1f', border: `1px solid ${C.border}`,
+              }}>Archived</span>
+            )}
+          </div>
           <div style={{ fontSize: 11, color: C.textMut, lineHeight: 1.45 }}>{project.description}</div>
         </div>
-        {(hardC > 0 || softC > 0) && (
-          <div style={{ display: 'flex', gap: 4, marginLeft: 12, flexShrink: 0 }}>
-            {hardC > 0 && <Badge type="hard">{hardC} hard</Badge>}
-            {softC > 0 && <Badge type="soft">{softC}</Badge>}
-          </div>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 12, flexShrink: 0 }}>
+          {hardC > 0 && <Badge type="hard">{hardC} hard</Badge>}
+          {softC > 0 && <Badge type="soft">{softC}</Badge>}
+          <CardMenu project={project} onArchive={onArchive} onDelete={onDelete} />
+        </div>
       </div>
 
       <Hr style={{ margin: '10px 0' }} />
@@ -150,14 +226,43 @@ export function DashboardView() {
   const { data: projects = [], isLoading } = useProjects()
   const { data: allTickets = [] }          = useTickets()
   const { mutate: createProject, isPending: creating, error: createError, reset: resetCreate } = useCreateProject()
+  const { mutate: updateProject, error: archiveError, reset: resetArchive } = useUpdateProject()
+  const { mutate: deleteProject, isPending: deleting, error: deleteError, reset: resetDelete } = useDeleteProject()
   const conflicts = useConflicts(allTickets)
 
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
+  const [showArchived, setShowArchived]   = useState(false)
+  const [deleteTarget, setDeleteTarget]   = useState<Project | null>(null)
+  const [confirmName, setConfirmName]     = useState('')
 
-  const totalConflicts = conflicts.length
-  const hardTotal = conflicts.filter(c => c.type === 'hard').length
+  const activeProjects   = projects.filter(p => !p.archived)
+  const archivedProjects = projects.filter(p => p.archived)
+
+  // Rekap header hanya dari project aktif — project arsip tidak ikut dihitung
+  const activeIds       = new Set(activeProjects.map(p => p.id))
+  const activeTickets   = allTickets.filter(t => activeIds.has(t.projectId))
+  const activeConflicts = conflicts.filter(c => activeIds.has(c.projectId))
+  const totalConflicts  = activeConflicts.length
+  const hardTotal       = activeConflicts.filter(c => c.type === 'hard').length
+
+  const handleArchive = (p: Project) => {
+    resetArchive()
+    updateProject({ ...p, archived: !p.archived })
+  }
+
+  const handleDeleteRequest = (p: Project) => {
+    resetDelete()
+    setConfirmName('')
+    setDeleteTarget(p)
+  }
+
+  const deleteNameMatches = deleteTarget !== null && confirmName.trim() === deleteTarget.name
+  const handleDeleteConfirm = () => {
+    if (!deleteTarget || !deleteNameMatches) return
+    deleteProject(deleteTarget.id, { onSuccess: () => setDeleteTarget(null) })
+  }
 
   const handleCreate = () => {
     if (!newName.trim()) return
@@ -186,7 +291,7 @@ export function DashboardView() {
               {isLoading
                 ? 'Loading…'
                 : <>
-                    {projects.length} project{projects.length !== 1 ? 's' : ''} · {allTickets.length} total tickets ·{' '}
+                    {activeProjects.length} project{activeProjects.length !== 1 ? 's' : ''} · {activeTickets.length} total tickets ·{' '}
                     {totalConflicts > 0
                       ? <span style={{ color: hardTotal > 0 ? C.hard : C.soft }}>{totalConflicts} active conflict{totalConflicts !== 1 ? 's' : ''}</span>
                       : <span style={{ color: C.green }}>no active conflicts</span>
@@ -198,18 +303,62 @@ export function DashboardView() {
           <Btn variant="primary" size="md" onClick={() => setShowNew(true)}>+ New Project</Btn>
         </div>
 
+        {archiveError && (
+          <div style={{
+            marginBottom: 14, padding: '9px 12px', borderRadius: 6,
+            background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.3)',
+            fontSize: 11, color: '#ef4444', lineHeight: 1.5,
+          }}>
+            Failed to update project: {(archiveError as Error).message}
+          </div>
+        )}
+
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}>
-          {projects.map(p => (
+          {activeProjects.map(p => (
             <ProjectCard
               key={p.id}
               project={p}
               allTickets={allTickets}
               conflicts={conflicts}
               onSelect={setProject}
+              onArchive={handleArchive}
+              onDelete={handleDeleteRequest}
             />
           ))}
           <NewProjectCard onCreate={() => setShowNew(true)} />
         </div>
+
+        {archivedProjects.length > 0 && (
+          <div style={{ marginTop: 28 }}>
+            <button
+              onClick={() => setShowArchived(s => !s)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                fontFamily: 'Inter, sans-serif', fontSize: 11, fontWeight: 600,
+                color: C.textMut, textTransform: 'uppercase', letterSpacing: '0.06em',
+              }}
+            >
+              <span style={{ fontSize: 9 }}>{showArchived ? '▾' : '▸'}</span>
+              Archived ({archivedProjects.length})
+            </button>
+            {showArchived && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14, marginTop: 12 }}>
+                {archivedProjects.map(p => (
+                  <ProjectCard
+                    key={p.id}
+                    project={p}
+                    allTickets={allTickets}
+                    conflicts={conflicts}
+                    onSelect={setProject}
+                    onArchive={handleArchive}
+                    onDelete={handleDeleteRequest}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {showNew && (
@@ -251,6 +400,52 @@ export function DashboardView() {
               <Btn variant="default" size="sm" onClick={() => { setShowNew(false); resetCreate() }}>Cancel</Btn>
               <Btn variant="primary" size="sm" onClick={handleCreate} disabled={creating}>
                 {creating ? 'Creating…' : 'Create Project'}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div
+          onClick={() => !deleting && setDeleteTarget(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.72)',
+            zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backdropFilter: 'blur(3px)',
+          }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{
+            width: 420, background: C.surface,
+            border: '1px solid rgba(239,68,68,0.35)',
+            borderRadius: 10, padding: 20,
+            boxShadow: '0 32px 100px rgba(0,0,0,0.75)',
+            display: 'flex', flexDirection: 'column', gap: 12,
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Delete "{deleteTarget.name}"?</div>
+            <p style={{ margin: 0, fontSize: 11, color: C.textSec, lineHeight: 1.6 }}>
+              Semua isinya ikut terhapus permanen:{' '}
+              <b style={{ color: C.text }}>{allTickets.filter(t => t.projectId === deleteTarget.id).length} tiket</b>,{' '}
+              {deleteTarget.modules.length} modul, {deleteTarget.environments.length} environment,
+              beserta riwayat deployment dan kesepakatan konflik. Tindakan ini tidak bisa dibatalkan.
+              Kalau hanya ingin menyembunyikan dari dashboard, gunakan <b style={{ color: C.text }}>Archive</b>.
+            </p>
+            <Field label={`Ketik "${deleteTarget.name}" untuk konfirmasi`}>
+              <Input value={confirmName} onChange={setConfirmName} placeholder={deleteTarget.name} autoFocus />
+            </Field>
+            {deleteError && (
+              <div style={{
+                padding: '9px 12px', borderRadius: 6,
+                background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.3)',
+                fontSize: 11, color: '#ef4444', lineHeight: 1.5,
+              }}>
+                Failed to delete: {(deleteError as Error).message}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 7, justifyContent: 'flex-end' }}>
+              <Btn variant="default" size="sm" onClick={() => setDeleteTarget(null)} disabled={deleting}>Cancel</Btn>
+              <Btn variant="danger" size="sm" onClick={handleDeleteConfirm} disabled={!deleteNameMatches || deleting}>
+                {deleting ? 'Deleting…' : 'Delete project'}
               </Btn>
             </div>
           </div>

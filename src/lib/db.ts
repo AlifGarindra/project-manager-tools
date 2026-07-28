@@ -8,6 +8,7 @@ interface DbProject {
   name: string
   description: string | null
   created_at: string
+  archived: boolean
   environments: { id: string; name: string; color: string; sort_order: number }[]
   modules:      { id: string; name: string; category: string }[]
 }
@@ -38,6 +39,7 @@ function toProject(raw: DbProject): Project {
     name: raw.name,
     description: raw.description ?? '',
     createdAt: raw.created_at.slice(0, 10),
+    archived: raw.archived,
     environments: [...raw.environments]
       .map(e => ({ id: e.id, name: e.name, color: e.color, order: e.sort_order }))
       .sort((a, b) => a.order - b.order),
@@ -79,7 +81,7 @@ export async function fetchProjects(): Promise<Project[]> {
   if (!supabase) return []
   const { data, error } = await supabase
     .from('projects')
-    .select('id, name, description, created_at, environments(id, name, color, sort_order), modules(id, name, category)')
+    .select('id, name, description, created_at, archived, environments(id, name, color, sort_order), modules(id, name, category)')
     .order('created_at', { ascending: true })
   if (error) {
     console.error('[fetchProjects]', error)
@@ -125,6 +127,7 @@ export async function createProject(input: {
     name: proj.name,
     description: proj.description ?? '',
     createdAt: proj.created_at.slice(0, 10),
+    archived: false,
     environments: mappedEnvs,
     modules: [],
   }
@@ -135,7 +138,7 @@ export async function updateProject(project: Project): Promise<void> {
 
   const { error: projErr } = await supabase
     .from('projects')
-    .update({ name: project.name, description: project.description })
+    .update({ name: project.name, description: project.description, archived: project.archived })
     .eq('id', project.id)
   if (projErr) throw projErr
 
@@ -177,6 +180,29 @@ export async function updateProject(project: Project): Promise<void> {
   if (toDelMod.length > 0) {
     await supabase.from('modules').delete().in('id', toDelMod)
   }
+}
+
+// Hapus project beserta seluruh isinya. Anak dihapus berurutan dari sini —
+// tidak bergantung pada konfigurasi ON DELETE CASCADE di DB.
+export async function deleteProjectById(id: string): Promise<void> {
+  if (!supabase) throw new Error('Supabase not configured')
+
+  const { error: resErr } = await supabase.from('conflict_resolutions').delete().eq('project_id', id)
+  if (resErr) throw resErr
+
+  // tickets cascade ke ticket_modules & deployment_entries (sudah berlaku di
+  // deleteTicketById); kalau tidak, error akan ter-throw dan terlihat di UI
+  const { error: tickErr } = await supabase.from('tickets').delete().eq('project_id', id)
+  if (tickErr) throw tickErr
+
+  const { error: modErr } = await supabase.from('modules').delete().eq('project_id', id)
+  if (modErr) throw modErr
+
+  const { error: envErr } = await supabase.from('environments').delete().eq('project_id', id)
+  if (envErr) throw envErr
+
+  const { error: projErr } = await supabase.from('projects').delete().eq('id', id)
+  if (projErr) throw projErr
 }
 
 // ── Tickets ───────────────────────────────────────────────────────────────────

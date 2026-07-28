@@ -21,9 +21,10 @@ interface InputProps {
   type?: string
   style?: CSSProperties
   autoFocus?: boolean
+  list?: string
 }
 
-export function Input({ value, onChange, placeholder, type = 'text', style: extra, autoFocus }: InputProps) {
+export function Input({ value, onChange, placeholder, type = 'text', style: extra, autoFocus, list }: InputProps) {
   const [foc, setFoc] = useState(false)
   return (
     <input
@@ -32,6 +33,7 @@ export function Input({ value, onChange, placeholder, type = 'text', style: extr
       onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
       placeholder={placeholder}
       autoFocus={autoFocus}
+      list={list}
       onFocus={() => setFoc(true)}
       onBlur={() => setFoc(false)}
       style={{ ...inputBase, border: `1px solid ${foc ? C.borderEl : C.border}`, ...extra }}

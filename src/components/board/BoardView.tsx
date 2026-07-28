@@ -3,7 +3,9 @@ import { C } from '../ui/tokens'
 import { Badge } from '../ui/Badge'
 import { Btn } from '../ui/Btn'
 import { PriorityDot } from '../ui/PriorityDot'
+import { FilterBar } from '../ui/FilterBar'
 import { useAppStore } from '../../stores/appStore'
+import { filterTickets } from '../../lib/ticketFilters'
 import { useConflicts } from '../../hooks/useConflicts'
 import { useTickets, useSaveTicket } from '../../hooks/useTickets'
 import { useProjects } from '../../hooks/useProjects'
@@ -157,7 +159,7 @@ function BoardColumn({ col, tickets, project, conflicts, onOpen, onNew, onDrop }
 }
 
 export function BoardView() {
-  const { selectedProjectId, openTicket, newTicket } = useAppStore()
+  const { selectedProjectId, openTicket, newTicket, filters } = useAppStore()
   const { data: allTickets = [] } = useTickets()
   const { data: projects = [] }   = useProjects()
   const { mutate: saveTicket }    = useSaveTicket()
@@ -165,6 +167,10 @@ export function BoardView() {
 
   const project  = projects.find(p => p.id === selectedProjectId)
   const pTickets = allTickets.filter(t => t.projectId === selectedProjectId)
+  const moduleNames = Object.fromEntries((project?.modules ?? []).map(m => [m.id, m.name]))
+  // Filter hanya mempersempit card yang tampil — badge konflik toolbar tetap
+  // dihitung dari semua tiket project
+  const visibleTickets = filterTickets(pTickets, filters, moduleNames)
   const pConf    = allConflicts.filter(c => c.projectId === selectedProjectId)
   const hardC    = pConf.filter(c => c.type === 'hard').length
   const softC    = pConf.filter(c => c.type === 'soft').length
@@ -195,6 +201,8 @@ export function BoardView() {
         <Btn variant="primary" size="sm" onClick={() => newTicket()}>+ Ticket</Btn>
       </div>
 
+      <FilterBar project={project} tickets={pTickets} visibleCount={visibleTickets.length} />
+
       <div style={{
         flex: 1, overflowX: 'auto', overflowY: 'hidden',
         padding: '14px', display: 'flex', gap: 10, alignItems: 'flex-start',
@@ -203,7 +211,7 @@ export function BoardView() {
           <BoardColumn
             key={col.id}
             col={col}
-            tickets={pTickets.filter(t => t.status === col.id)}
+            tickets={visibleTickets.filter(t => t.status === col.id)}
             project={project}
             conflicts={pConf}
             onOpen={openTicket}

@@ -137,5 +137,5 @@ Terakhir diperbarui: 2026-07-05
 | Diubah besar | `src/lib/conflict.ts`, `src/lib/db.ts`, `src/lib/utils.ts`, `src/types.ts` |
 | Diubah besar | `src/components/timeline/TimelineView.tsx`, `src/components/tickets/TicketModal.tsx`, `src/components/conflicts/ConflictPanel.tsx` |
 
-> **TODO:** CLAUDE.md perlu ditulis ulang agar mencerminkan arsitektur saat ini
-> (React Query + Supabase DB, router, ticket type, conflict zones, resolutions).
+> CLAUDE.md sudah ditulis ulang (2026-07-06) dan kini mencerminkan arsitektur
+> saat ini — file ini tinggal menjadi riwayat perubahan.

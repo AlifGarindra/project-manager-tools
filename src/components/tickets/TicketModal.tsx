@@ -106,6 +106,16 @@ export function TicketModal() {
     () => allTickets.filter(t => t.projectId === selectedProjectId),
     [allTickets, selectedProjectId]
   )
+
+  // Saran nama assignee dari semua tiket — mengurangi variasi ejaan nama yang sama
+  const assigneeSuggestions = useMemo(() => {
+    const names = new Set<string>()
+    for (const t of allTickets) {
+      const a = t.assignee.trim()
+      if (a) names.add(a)
+    }
+    return [...names].sort((a, b) => a.localeCompare(b))
+  }, [allTickets])
   const draft = useMemo(
     () => (editMode && isOpen ? withDerivedEndDate(form, topEnvId) : null),
     [editMode, isOpen, form, topEnvId]
@@ -293,7 +303,12 @@ export function TicketModal() {
             </Field>
             <Field label="Assignee" style={{ flex: 1 }}>
               {editMode
-                ? <Input value={form.assignee} onChange={v => set('assignee', v)} placeholder="Name" />
+                ? <>
+                    <Input value={form.assignee} onChange={v => set('assignee', v)} placeholder="Name" list="assignee-suggestions" />
+                    <datalist id="assignee-suggestions">
+                      {assigneeSuggestions.map(a => <option key={a} value={a} />)}
+                    </datalist>
+                  </>
                 : <span style={{ fontSize: 12, color: form.assignee ? C.text : C.textMut, display: 'block', padding: '4px 0' }}>{form.assignee || '—'}</span>
               }
             </Field>

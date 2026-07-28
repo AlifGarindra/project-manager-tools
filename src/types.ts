@@ -22,6 +22,7 @@ export interface Project {
   name: string
   description: string
   createdAt: string
+  archived: boolean               // diarsip = disembunyikan dari dashboard & rekap
   environments: Environment[]
   modules: Module[]
 }

@@ -4,7 +4,9 @@ import { format } from 'date-fns'
 import { C } from '../ui/tokens'
 import { Badge } from '../ui/Badge'
 import { Btn } from '../ui/Btn'
+import { FilterBar } from '../ui/FilterBar'
 import { useAppStore } from '../../stores/appStore'
+import { filterTickets } from '../../lib/ticketFilters'
 import { useConflicts, useConflictZones } from '../../hooks/useConflicts'
 import type { ConflictZone } from '../../lib/conflict'
 import { useTickets, useSaveTicket } from '../../hooks/useTickets'
@@ -540,7 +542,7 @@ function ConflictZoneOverlay({ zone, viewStart, dw }: { zone: ConflictZone; view
 
 // ── Main Timeline View ────────────────────────────────────────────────────────
 export function TimelineView() {
-  const { selectedProjectId, openTicket, newTicket } = useAppStore()
+  const { selectedProjectId, openTicket, newTicket, filters } = useAppStore()
   const { data: allTickets = [] } = useTickets()
   const { data: projects = [] }   = useProjects()
   const { mutate: saveTicket }    = useSaveTicket()
@@ -597,7 +599,16 @@ export function TimelineView() {
   const viewStart  = useMemo(() => offset(vsOff), [vsOff])
   const dates      = useMemo(() => buildDates(viewStart, TOTAL_DAYS), [viewStart])
   const months     = useMemo(() => buildMonths(dates), [dates])
+  // Lookup map moduleId → name (conflict popup display + search filter)
+  const moduleNames = useMemo(() =>
+    Object.fromEntries(project?.modules.map(m => [m.id, m.name]) ?? []),
+    [project?.modules]
+  )
+
   const pTickets   = allTickets.filter(t => t.projectId === selectedProjectId)
+  // Filter hanya mempersempit marker/connector yang digambar — konflik & zona
+  // tetap dihitung dari semua tiket project supaya konflik tidak tersembunyi
+  const visibleTickets = filterTickets(pTickets, filters, moduleNames)
   const pConf      = allConflicts.filter(c => c.projectId === selectedProjectId)
   const sortedEnvColors = sortedEnvs.map(e => ({ id: e.id, color: e.color }))
 
@@ -609,7 +620,7 @@ export function TimelineView() {
   const markerGroups = useMemo((): MarkerGroup[] => {
     const map = new Map<string, MarkerGroup>()
 
-    for (const ticket of pTickets) {
+    for (const ticket of visibleTickets) {
       if (ticket.status === 'done' || ticket.status === 'cancelled') continue
 
       if (ticket.deployments.length > 0) {
@@ -643,7 +654,7 @@ export function TimelineView() {
     }
 
     return Array.from(map.values())
-  }, [pTickets, sortedEnvs])
+  }, [visibleTickets, sortedEnvs])
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -669,12 +680,6 @@ export function TimelineView() {
 
   const hardC = pConf.filter(c => c.type === 'hard').length
   const softC = pConf.filter(c => c.type === 'soft').length
-
-  // Lookup map moduleId → name for conflict popup display
-  const moduleNames = useMemo(() =>
-    Object.fromEntries(project?.modules.map(m => [m.id, m.name]) ?? []),
-    [project?.modules]
-  )
 
   if (!project) return null
 
@@ -721,6 +726,9 @@ export function TimelineView() {
         <Btn variant="primary" size="sm" onClick={() => newTicket()}>+ Ticket</Btn>
       </div>
 
+      {/* ── Filter bar ── */}
+      <FilterBar project={project} tickets={pTickets} visibleCount={visibleTickets.length} />
+
       {/* ── Main layout ── */}
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
 
@@ -739,8 +747,8 @@ export function TimelineView() {
             })
             const hasH = envC.some(c => c.type === 'hard')
             const hasS = !hasH && envC.length > 0
-            const deployed = pTickets.filter(t => t.deployments.some(d => d.environmentId === env.id)).length
-            const planned  = pTickets.filter(t => t.deployments.length === 0 && t.environmentId === env.id).length
+            const deployed = visibleTickets.filter(t => t.deployments.some(d => d.environmentId === env.id)).length
+            const planned  = visibleTickets.filter(t => t.deployments.length === 0 && t.environmentId === env.id).length
 
             return (
               <div key={env.id} style={{
@@ -815,7 +823,7 @@ export function TimelineView() {
             <div ref={rowsRef} style={{ position: 'relative', height: totalH }}>
 
               {/* Deployment progression bezier lines */}
-              <DeploymentConnectors tickets={pTickets} sortedEnvColors={sortedEnvColors} viewStart={viewStart} dw={dw} />
+              <DeploymentConnectors tickets={visibleTickets} sortedEnvColors={sortedEnvColors} viewStart={viewStart} dw={dw} />
 
               {/* Env rows (backgrounds, conflict zones, today line) */}
               {sortedEnvs.map((env, idx) => {
